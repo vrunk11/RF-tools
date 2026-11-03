@@ -1,0 +1,130 @@
+# Windows package: the program built with MSVC against an official Qt, with its
+# Qt runtime beside it, delivered as a portable ZIP.
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+name: Package Windows
+
+on:
+  workflow_call:
+    inputs:
+      artifact_name:
+        description: Name of the uploaded ZIP artifact
+        required: false
+        default: rf-tools-windows
+        type: string
+      retention_days:
+        description: Artifact retention in days
+        required: false
+        default: 30
+        type: number
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    runs-on: windows-latest
+    timeout-minutes: 60
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Resolve package version
+        id: version
+        shell: pwsh
+        run: |
+          if ($env:GITHUB_REF -like "refs/tags/*") {
+            $version = $env:GITHUB_REF_NAME
+          } else {
+            $version = "git-$($env:GITHUB_SHA.Substring(0,7))"
+          }
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+
+      - name: Install Qt
+        uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
+        with:
+          version: '6.9.*'
+          host: 'windows'
+          target: 'desktop'
+          arch: 'win64_msvc2022_64'
+          cache: true
+
+      # When the program has libraries of its own (see vcpkg.json), install
+      # them here with the project-local vcpkg, as ld-decode-tools does: clone
+      # vcpkg in full (it resolves the builtin-baseline from its history),
+      # install with --x-manifest-root=. and add vcpkg_installed to
+      # CMAKE_PREFIX_PATH and its bin to the package.
+      - name: Configure and build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+
+          # MSVC environment for the Ninja generator. Using the dev shell
+          # rather than a pinned "Visual Studio NN" generator keeps configure
+          # working across runner image bumps.
+          $vsPath = &"${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
+
+          cmake -S . -B build -G Ninja `
+            -DCMAKE_BUILD_TYPE=Release `
+            -DBUILD_TESTING=OFF `
+            "-DCMAKE_PREFIX_PATH=$env:QT_ROOT_DIR" `
+            -DAPP_BRANCH=github-actions `
+            "-DAPP_COMMIT=${{ steps.version.outputs.version }}"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          cmake --build build --parallel
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if (-not (Test-Path build\bin\rfx-gui.exe)) {
+            Write-Error "rfx-gui.exe was not built"
+            exit 1
+          }
+
+      - name: Assemble package
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $name = "rf-tools-${{ steps.version.outputs.version }}-windows-x64"
+          $stage = "dist\$name"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+
+          Copy-Item build\bin\rfx-gui.exe $stage
+
+          # Qt runtime and plugins (platforms, iconengines, ...)
+          & windeployqt --release --no-translations --no-system-d3d-compiler --no-opengl-sw "$stage\rfx-gui.exe"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+
+          Copy-Item README.md, LICENSE $stage
+
+      # rfx-gui is a GUI-subsystem binary: --help goes to a message box, so the
+      # check is its --self-test, which builds the window and exits.
+      - name: Smoke test packaged program
+        shell: pwsh
+        run: |
+          $stage = Get-ChildItem -Path dist -Directory | Select-Object -First 1
+          & "$($stage.FullName)\rfx-gui.exe" --self-test
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "::error::rfx-gui --self-test exited with $LASTEXITCODE"
+            exit 1
+          }
+          Write-Host "rfx-gui: ok"
+
+      - name: Create ZIP
+        shell: pwsh
+        run: |
+          $stage = Get-ChildItem -Path dist -Directory | Select-Object -First 1
+          Compress-Archive -Path $stage.FullName -DestinationPath "dist\$($stage.Name).zip"
+          Get-ChildItem dist\*.zip | ForEach-Object {
+            Write-Host "$($_.Name) ($([math]::Round($_.Length / 1MB, 2)) MB)"
+          }
+
+      - name: Upload ZIP artifact
+        uses: actions/upload-artifact@v7
+        with:
+          name: ${{ inputs.artifact_name }}
+          path: dist/*.zip
+          if-no-files-found: error
+          retention-days: ${{ inputs.retention_days }}

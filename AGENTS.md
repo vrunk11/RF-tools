@@ -66,19 +66,26 @@ predictor, and a C++ tool is correct when it gives that crate's output.
 
 | Directory | Binaries | Purpose |
 | --- | --- | --- |
-| `src/` | (none yet) | The C++/Qt tools, one directory per tool, shared code in `src/library/` |
+| `src/rfx-gui/` | `rfx-gui` | Qt 6 Widgets application for `.rfx` archives. For now a skeleton (a window) that gives the CI something to build, test and package |
+| `src/library/` | (none yet) | Shared code of the tools, as a static library, when there is some |
 
 ### 1.2 Repository layout
 
 ```
 ├── AGENTS.md                 # this file (CLAUDE.md and .github/copilot-instructions.md point here)
+├── TESTING.md                # test slices and how to run them
 ├── CONTRIBUTING.md
-├── README.md
-├── LICENSE                   # GPL-3.0-or-later
+├── BUILD.md / INSTALL.md     # Nix build and install
+├── CMakeLists.txt            # top level: options, Qt, the tools
+├── build.sh / build.bat      # local builds (Windows: project-local vcpkg)
+├── flake.nix                 # the package and the dev shell
+├── vcpkg.json                # Windows dependencies (and Qt, under the `qt` feature)
+├── src/                      # one directory per tool
+├── tools/                    # repository scripts run by CI (check-spdx-new-files.sh)
 ├── docs/
 │   └── Specifications/       # the file formats, kept true (§2)
 │       └── rfx-format.md
-└── src/                      # the C++/Qt tools (to come)
+└── .github/workflows/        # CI/CD, see §7
 ```
 
 ## 2. File formats
@@ -154,6 +161,15 @@ cannot be used, a stage that stops). Not -1, which a shell sees as 255.
 
 ## 5. Testing
 
+Source of truth: [TESTING.md](TESTING.md). In short:
+
+| CTest label | What | Needs |
+| --- | --- | --- |
+| `unit` | the tests of the library and of the windows (the windows are tested with no screen) | nothing beyond the build |
+
+- **Every** `add_test()` must carry exactly one label; CI fails on an unlabelled test. Add a
+  `functional` label, and its slice in `build-and-test.yml`, when tests run the program over
+  fixtures.
 - A lossless tool is tested by the round trip: pack, unpack, and the hash of the result against
   the hash of the input (`sha256` in the metadata).
 - A change to the predictor, the coder or the container needs a test that decodes a fixed
@@ -165,16 +181,45 @@ cannot be used, a stage that stops). Not -1, which a shell sees as 255.
 
 ## 6. Development environment
 
-The C++ tools will use CMake and Ninja against Qt 6, with a Nix flake as the reference
-environment, as ld-decode-tools does. Nothing builds yet.
+**Nix is the supported environment**; CI's Linux gate runs inside the same dev shell.
 
+```bash
+nix develop                                   # all dependencies (Qt6, ffmpeg, ccache)
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build
+ctest --test-dir build -L unit --output-on-failure
+nix build .#                                  # the package, as Nix users get it
+```
+
+One-off without entering the shell: `nix develop -c <command>`. For a temporary tool, use
+`nix shell nixpkgs#<tool> -c <tool> ...` — do **not** add it to `flake.nix`.
+
+- `./build.sh` (Linux/macOS) and `build.bat` (Windows) build into `build/`, tuned for the
+  machine (`NATIVE=0` for a portable build); see [BUILD.md](BUILD.md).
 - In-source builds are rejected; use `build/` or `build-*/`.
+- Windows: `build.bat` uses a project-local vcpkg (`vcpkg/`, manifest `vcpkg.json`, Qt under
+  the `qt` feature). Keep `vcpkg.json` and `package-windows.yml` in step.
 
 ## 7. CI/CD
 
-None yet. When it exists it will follow ld-decode-tools: a Nix build and test on every push,
-and packages for Linux, macOS and Windows. Before proposing build-system or dependency
-changes, say in the PR what was validated locally and what only CI can show.
+All in `.github/workflows/`, entered through `main.yml` (the same as ld-decode-tools):
+
+| Workflow | When | What |
+| --- | --- | --- |
+| `main.yml` | push (all branches, `v*` tags), PR, dispatch | Orchestrates everything below |
+| `build-and-test.yml` | always | Static checks (SPDX on new files, script syntax, flake eval); `nix build` with a smoke test; dev-shell build + `unit` CTest slice + staged install |
+| `package-linux.yml` | push / dispatch | Qt 6.9 build → linuxdeploy → tarball + AppImage |
+| `package-macos.yml` | push / dispatch | Qt 6.9 build → `macdeployqt` → DMG |
+| `package-windows.yml` | push / dispatch | MSVC + Qt 6.9 → `windeployqt` → ZIP |
+| `release-from-artifact.yml` | `v*` tags | One GitHub release with every platform's package |
+
+The smoke tests run `rfx-gui --self-test` (a hidden option that builds the window and exits),
+because the program is a GUI and `--help` opens a message box on Windows.
+
+Before proposing build-system or dependency changes, read the platform workflow they affect
+and say in the PR what was validated locally and what only CI can show (e.g. Windows/MSVC,
+macOS, the AppImage). If documentation and a working workflow disagree, the workflow is right
+— flag the mismatch.
 
 ## 8. Licensing
 

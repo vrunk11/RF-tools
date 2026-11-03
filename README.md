@@ -7,7 +7,7 @@ these files directly. The sister project for what comes after the decoder is
 [ld-decode-tools](https://github.com/vrunk11/ld-decode-tools).
 
 > [!NOTE]
-> The tools are written in C++17 with Qt 6, like ld-decode-tools, and are not written yet. The
+> The tools are written in C++17 with Qt 6, like ld-decode-tools; so far there is only a skeleton of the Qt application (`rfx-gui`). The
 > format is already in use through the Rust `rfx` crate of
 > [ld-decode-rust](https://github.com/vrunk11/ld-decode-rust) (`crates/rfx`, kept there as
 > legacy, with the reader of ld-decode). That crate is the reference: it defines the format, and
@@ -28,7 +28,11 @@ these files directly. The sister project for what comes after the decoder is
 
 ## Building
 
-Nothing builds yet. The tools will build with CMake against Qt 6, as ld-decode-tools does.
+The tools build with CMake against Qt 6, as ld-decode-tools does. See [BUILD.md](BUILD.md):
+- `nix develop`, then `./build.sh` (Linux/macOS), for the reproducible Nix environment
+- `build.bat` (Windows), which fetches the dependencies through a project-local vcpkg
+
+Ready-made packages for Linux (tarball and AppImage), macOS (DMG) and Windows (ZIP) are built by the CI for every push and attached to each GitHub release.
 
 ## Important Notes
 
@@ -40,4 +44,5 @@ Nothing builds yet. The tools will build with CMake against Qt 6, as ld-decode-t
 
 - [docs/Specifications/rfx-format.md](docs/Specifications/rfx-format.md) - the `.rfx` format, enough to write a reader
 
-Development: [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
+Development: [BUILD.md](BUILD.md), [INSTALL.md](INSTALL.md), [TESTING.md](TESTING.md),
+[CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).

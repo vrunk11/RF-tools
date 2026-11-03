@@ -7,3 +7,10 @@
 .vscode/
 .idea/
 *.swp
+
+# Local dependencies and builds
+/vcpkg/
+/vcpkg_installed/
+/external/
+/result
+/test-data-out/

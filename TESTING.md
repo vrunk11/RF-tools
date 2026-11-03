@@ -1,0 +1,47 @@
+# Testing
+
+How RF-tools is tested, locally and in CI.
+
+## Test slices
+
+Every test registered with CTest carries exactly one label. CI runs each label as its own
+slice and fails if a test carries neither.
+
+| Label | Tests | Where defined | Needs |
+| --- | --- | --- | --- |
+| `unit` | `rfx-gui-self-test` (the program starts, builds its window and exits; a placeholder until there are real tests) | `src/**/CMakeLists.txt` | the build only (runs without a screen) |
+
+Add a `functional` label (and its slice in `.github/workflows/build-and-test.yml`) when there
+are tests that run the program end to end over fixtures.
+
+### Unit tests
+
+Small executables with in-code inputs. A behaviour change in the library comes with a case in
+the matching test. New unit tests:
+
+```cmake
+add_test(NAME testfoo COMMAND testfoo)
+set_tests_properties(testfoo PROPERTIES LABELS unit)
+```
+
+A test that checks with `assert()` must be built with `-UNDEBUG`
+(`target_compile_options(testfoo PRIVATE $<IF:$<CXX_COMPILER_ID:MSVC>,/UNDEBUG,-UNDEBUG>)`):
+the Release and RelWithDebInfo builds define `NDEBUG`, which removes every `assert()`.
+
+A test that touches the predictor or the coder must give the same bits on every platform: it
+decodes a fixed stream to fixed samples, and the expected values are written in the test.
+
+## Running the tests
+
+```bash
+nix develop
+cmake -S . -B build -G Ninja -DCMAKE_BUILD_TYPE=RelWithDebInfo
+cmake --build build
+ctest --test-dir build -L unit --output-on-failure
+```
+
+## Continuous integration
+
+`build-and-test.yml` runs, for every push and pull request: the static checks (SPDX headers on
+new files, script syntax, flake evaluation), the Nix package build with a smoke test, and the
+build with the `unit` slice and a staged install. See [AGENTS.md](AGENTS.md) §7.
