@@ -35,6 +35,18 @@ constexpr int kExitOk = 0;
 constexpr int kExitFailed = 1;
 constexpr int kExitUsage = 2;
 
+bool parseDevice(const QString &name, rfx::Device &out)
+{
+    if (name == QLatin1String("cpu")) {
+        out = rfx::Device::Cpu;
+    } else if (name == QLatin1String("gpu")) {
+        out = rfx::Device::Gpu;
+    } else {
+        return false;
+    }
+    return true;
+}
+
 int usageError(const QString &message)
 {
     std::fprintf(stderr, "rfx: %s\n", message.toStdString().c_str());
@@ -89,7 +101,7 @@ int runUnpack(const QStringList &args)
     const QCommandLineOption outdir({"d", "outdir"}, "Directory to write into (default: the current one).", "dir", ".");
     const QCommandLineOption only("only", "Extract only this track (0 is the primary).", "track");
     const QCommandLineOption meta("meta", "Write only the metadata (each track's .yaml as it was, and <archive>.yaml with all of it); no sample is decoded.");
-    const QCommandLineOption device("device", "Where the predictor runs: cpu (the only one the C++ tools have).", "device", "cpu");
+    const QCommandLineOption device("device", "Where the predictor runs: cpu or gpu (OpenCL, the same bits).", "device", "cpu");
     const QCommandLineOption threads("threads", "Threads decoding segments (default: one per processor).", "n");
     const QCommandLineOption as("as", "Write the captures in another format (s16, r16, s8, r8, lds, flac, ldf, or mflac: the tracks as the channels of FLAC files, 8 a file, to open in an audio program) instead of the one they came in; the samples are checked by hash.", "format");
     parser.addOption(outdir);
@@ -103,10 +115,12 @@ int runUnpack(const QStringList &args)
     if (parser.positionalArguments().size() != 1) {
         return usageError("unpack wants one .rfx file");
     }
-    if (parser.value(device) != QLatin1String("cpu")) {
-        return usageError("--device must be cpu: the C++ tools have no GPU predictor");
+    rfx::Device deviceValue;
+    if (!parseDevice(parser.value(device), deviceValue)) {
+        return usageError("--device is cpu or gpu");
     }
     rfx::UnpackOptions options;
+    options.device = deviceValue;
     QString error;
     if (!trackOption(parser, only, options.only, error)) {
         return usageError(error);
@@ -161,7 +175,7 @@ int runPack(const QStringList &args)
     const QCommandLineOption ldDecode("ld-decode", "ld-decode, to locate the lines of the captures (pass 0).", "program", "ld-decode");
     const QCommandLineOption rateMhz("rate-mhz", "Capture sample rate in MHz, for pass 0 and when a capture has no .yaml.", "MHz", "75");
     const QCommandLineOption format("format", "Capture format: auto (from the extension), s16, r16, s8, r8, lds, or flac / ldf (decoded with ffmpeg to raw 16-bit samples first).", "format", "auto");
-    const QCommandLineOption device("device", "Where the predictor runs: cpu (the only one the C++ tools have).", "device", "cpu");
+    const QCommandLineOption device("device", "Where the predictor runs: cpu or gpu (OpenCL, the same bits).", "device", "cpu");
     const QCommandLineOption order("order", "Order of coding: auto puts the cleanest capture of each programme first, given keeps the command line order.", "order", "auto");
     const QCommandLineOption flac("flac", "Code the tracks as FLAC instead of with the predictor: the file is then an ordinary Matroska audio file (a FLAC track per capture) that audio programs open, several times larger; unpack gives the captures back all the same.");
     const QCommandLineOption threads("threads", "Threads coding segments (default: one per processor).", "n");
@@ -176,8 +190,9 @@ int runPack(const QStringList &args)
     if (!parser.isSet(output)) {
         return usageError("pack wants --output");
     }
-    if (parser.value(device) != QLatin1String("cpu")) {
-        return usageError("--device must be cpu: the C++ tools have no GPU predictor");
+    rfx::Device deviceValue;
+    if (!parseDevice(parser.value(device), deviceValue)) {
+        return usageError("--device is cpu or gpu");
     }
     rfx::PackOptions options;
     bool ok = false;
@@ -192,6 +207,7 @@ int runPack(const QStringList &args)
     }
     options.segment = static_cast<size_t>(segmentValue);
     options.verify = !parser.isSet(noVerify);
+    options.device = deviceValue;
     if (parser.isSet(pass0)) {
         options.pass0Dir = parser.value(pass0);
     }
@@ -244,7 +260,7 @@ struct WorkOptions
     QCommandLineOption pass0{"pass0", "Pass 0 dumps already made (pass0_<i>.txt, in the order of the tracks written).", "dir"};
     QCommandLineOption ldDecode{"ld-decode", "ld-decode, to locate the lines of the captures (pass 0).", "program", "ld-decode"};
     QCommandLineOption rateMhz{"rate-mhz", "Capture sample rate in MHz, for pass 0.", "MHz", "75"};
-    QCommandLineOption device{"device", "Where the predictor runs: cpu (the only one the C++ tools have).", "device", "cpu"};
+    QCommandLineOption device{"device", "Where the predictor runs: cpu or gpu (OpenCL, the same bits).", "device", "cpu"};
     QCommandLineOption threads{"threads", "Threads coding segments (default: one per processor).", "n"};
 
     void addTo(QCommandLineParser &parser)
@@ -258,8 +274,8 @@ struct WorkOptions
     // give for a value that is not valid.
     QString read(const QCommandLineParser &parser, rfx::PackOptions &out) const
     {
-        if (parser.value(device) != QLatin1String("cpu")) {
-            return QStringLiteral("--device must be cpu: the C++ tools have no GPU predictor");
+        if (!parseDevice(parser.value(device), out.device)) {
+            return QStringLiteral("--device is cpu or gpu");
         }
         bool ok = false;
         const int levelValue = parser.value(level).toInt(&ok);

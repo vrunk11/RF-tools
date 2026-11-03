@@ -12,6 +12,7 @@
 
 #include "error.h"
 #include "ffmpeg.h"
+#include "sha256.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -73,21 +74,21 @@ QString withExtension(const QString &path, const QString &extension)
 
 std::string hashBytes(PosFile &file, uint64_t size)
 {
-    QCryptographicHash hash(QCryptographicHash::Sha256);
+    Sha256 hash;
     std::vector<char> buf(kByteChunk);
     uint64_t off = 0;
     while (off < size) {
         const size_t n = static_cast<size_t>(std::min<uint64_t>(size - off, buf.size()));
         file.readAt(buf.data(), n, off);
-        hash.addData(QByteArrayView(buf.data(), static_cast<qsizetype>(n)));
+        hash.update(buf.data(), n);
         off += n;
     }
-    return hash.result().toHex().toStdString();
+    return hash.finishHex();
 }
 
 std::string hashSamples(PosFile &file, SampleFormat fmt, uint64_t count)
 {
-    QCryptographicHash hash(QCryptographicHash::Sha256);
+    Sha256 hash;
     std::vector<int32_t> buf(kSampleChunk);
     std::vector<uint8_t> raw(buf.size() * 4);
     uint64_t at = 0;
@@ -101,10 +102,10 @@ std::string hashSamples(PosFile &file, SampleFormat fmt, uint64_t count)
             raw[4 * i + 2] = static_cast<uint8_t>(v >> 16);
             raw[4 * i + 3] = static_cast<uint8_t>(v >> 24);
         }
-        hash.addData(QByteArrayView(reinterpret_cast<const char *>(raw.data()), static_cast<qsizetype>(4 * n)));
+        hash.update(raw.data(), 4 * n);
         at += n;
     }
-    return hash.result().toHex().toStdString();
+    return hash.finishHex();
 }
 
 CaptureStats captureStats(const QString &path, SampleFormat fmt)

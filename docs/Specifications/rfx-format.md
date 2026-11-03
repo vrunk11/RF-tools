@@ -462,6 +462,7 @@ fixed segments, as the reference writes them, for every predictor level.
 | packing, unpacking, editing | `src/library/packer.cpp`, `archive.cpp`, `edit.cpp` |
 | sample formats | `src/library/sampleformat.cpp` |
 | predictor (CPU) | `src/library/predictor.cpp` |
+| predictor (OpenCL, same bits) | `src/library/kernel.cl`, `opencl.cpp`, `gpupredictor.cpp`, `gpupipeline.cpp` |
 | segments | `src/library/segment.cpp` |
 | range coder, residual model | `src/library/rangecoder.h`, `residualmodel.cpp` |
 | lag tables | `src/library/lagtable.cpp` |

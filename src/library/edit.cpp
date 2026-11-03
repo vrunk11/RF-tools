@@ -169,7 +169,10 @@ void assembleArchives(const std::vector<QString> &archives, const std::vector<Pi
                 if (p.fromArchive && dirs.count(p.arch) == 0) {
                     const QString d = QDir(workPath).filePath(QStringLiteral("a%1").arg(static_cast<qulonglong>(p.arch)));
                     std::fprintf(stderr, "decoding %s to read the references\n", archives[p.arch].toStdString().c_str());
-                    unpackArchive(archives[p.arch], d, UnpackOptions());
+                    UnpackOptions decodeOptions;
+                    decodeOptions.device = o.device;
+                    decodeOptions.threads = o.threads;
+                    unpackArchive(archives[p.arch], d, decodeOptions);
                     dirs[p.arch] = d;
                 }
             }

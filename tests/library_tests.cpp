@@ -18,12 +18,14 @@
 #include "residualmodel.h"
 #include "sampleformat.h"
 #include "segment.h"
+#include "sha256.h"
 #include "yaml.h"
 
 #include <QCryptographicHash>
 #include <QDir>
 #include <QTemporaryDir>
 
+#include <algorithm>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
@@ -66,6 +68,39 @@ std::string sha256Hex(const std::vector<uint8_t> &bytes)
     const QByteArray digest = QCryptographicHash::hash(
         QByteArray(reinterpret_cast<const char *>(bytes.data()), static_cast<qsizetype>(bytes.size())), QCryptographicHash::Sha256);
     return digest.toHex().toStdString();
+}
+
+// SHA-256 with the processor's instructions and without, against Qt's, over lengths
+// that cross every padding case and over input given in uneven pieces.
+void testSha256()
+{
+    {
+        rfx::Sha256 empty;
+        CHECK_EQ(empty.finishHex(), std::string("e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"));
+        rfx::Sha256 abc;
+        abc.update("abc", 3);
+        CHECK_EQ(abc.finishHex(), std::string("ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"));
+    }
+    Lcg lcg{2024};
+    std::vector<uint8_t> data(70000);
+    for (uint8_t &b : data) {
+        b = static_cast<uint8_t>(lcg.next() >> 24);
+    }
+    for (const size_t length : {size_t(0), size_t(1), size_t(55), size_t(56), size_t(63), size_t(64), size_t(65), size_t(119), size_t(120), size_t(128), size_t(1000), size_t(69999)}) {
+        const QByteArray want = QCryptographicHash::hash(QByteArray(reinterpret_cast<const char *>(data.data()), static_cast<qsizetype>(length)), QCryptographicHash::Sha256).toHex();
+        for (const bool hardware : {false, true}) {
+            rfx::Sha256 h(hardware);
+            // Uneven pieces: 7, 64, 129, then the rest.
+            size_t at = 0;
+            for (const size_t piece : {size_t(7), size_t(64), size_t(129), length}) {
+                const size_t take = std::min(piece, length - at);
+                h.update(data.data() + at, take);
+                at += take;
+            }
+            CHECK_EQ(h.finishHex(), want.toStdString());
+        }
+    }
+    std::fprintf(stderr, "sha256: processor instructions %s\n", rfx::Sha256::hardwareAvailable() ? "used" : "not available");
 }
 
 void testVint()
@@ -368,6 +403,7 @@ void testPredictorMatchesReference()
 
 int main()
 {
+    testSha256();
     testVint();
     testRangeCoderRoundTrip();
     testResidualModelRoundTrip();

@@ -12,6 +12,7 @@
 #pragma once
 
 #include "convert.h"
+#include "device.h"
 #include "lagtable.h"
 #include "metadata.h"
 #include "posfile.h"
@@ -76,6 +77,8 @@ struct UnpackOptions
     // Write the captures in another format as well (see OutputFormat); the
     // multichannel FLAC one has its own function, exportMultichannelFlac.
     std::optional<OutputFormat> target;
+    // Where the predictor runs.
+    Device device = Device::Cpu;
     // Threads decoding segments; 0 for one per processor.
     unsigned threads = 0;
 };

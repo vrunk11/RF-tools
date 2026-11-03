@@ -40,6 +40,10 @@ public:
     // reference tops()[c - 1] alone.
     std::vector<float> window(size_t k, int64_t s0, size_t n) const;
 
+    // The same into `out`, whose channels are `stride` apart (at least n + 2 * taps)
+    // and which holds channels * stride values: what the GPU predictor reads.
+    void windowInto(size_t k, int64_t s0, size_t n, size_t stride, float *out) const;
+
     // A window of one channel (n + 2 * taps long) over the references `which`
     // (track, weight) only, which may be any subset of the references with any
     // weights: to try references out.

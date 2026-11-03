@@ -16,6 +16,7 @@
 #include "capture.h"
 #include "ebml.h"
 #include "error.h"
+#include "gpupipeline.h"
 #include "lagtable.h"
 #include "metadata.h"
 #include "order.h"
@@ -29,6 +30,7 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QtGlobal>
 
 #include <algorithm>
 #include <chrono>
@@ -224,6 +226,12 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
     }
     const unsigned threads = o.threads != 0 ? o.threads : defaultThreads();
     auto prepared = std::make_unique<PreparedPack>();
+    const auto phaseStart = std::chrono::steady_clock::now();
+    auto phase = [&phaseStart](const char *what) {
+        if (!qEnvironmentVariableIsEmpty("RFX_TIMING")) {
+            std::fprintf(stderr, "  [%.2f s] %s\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - phaseStart).count(), what);
+        }
+    };
     const bool edit = std::any_of(specs.begin(), specs.end(), [](const CaptureSpec &s) { return s.carry.has_value(); });
     // Compressed captures (FLAC, Ogg-FLAC) are decoded to raw 16-bit files first:
     // the references are read at arbitrary positions.
@@ -267,6 +275,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
             stats[i] = captureStats(inputs[i], fmts[i]);
         }
     });
+    phase("captures hashed and scanned");
 
     // Where the lines of every capture are, from ld-decode's pass 0 (in the order
     // given), then the order to code them in.
@@ -296,6 +305,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
         fields.resize(inputs.size());
         parallelFor(inputs.size(), threads, [&](size_t i) { fields[i] = parsePass0(QDir(dir).filePath(QStringLiteral("pass0_%1.txt").arg(static_cast<qulonglong>(i)))); });
     }
+    phase("pass 0 read, order planned or not yet");
     std::vector<std::optional<double>> noise(inputs.size());
     for (size_t k = 0; k < inputs.size(); ++k) {
         if (specs[k].carry) {
@@ -364,6 +374,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
         }
     }
 
+    phase("lag tables");
     ArchiveMeta &meta = prepared->meta;
     meta.segment = o.segment;
     if (meta.segment == 0) {
@@ -428,6 +439,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
     }
     const std::vector<PosFile *> &files = prepared->files;
 
+    phase("metadata and files");
     // Weigh the references of each capture by how well each predicts it.
     if (inputs.size() > 1) {
         const ReferenceWindows windows(files, meta, tables);
@@ -491,6 +503,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
             }
         }
     }
+    phase("references chosen");
     return prepared;
 }
 
@@ -523,7 +536,10 @@ std::vector<PackedTrack> writePrepared(PreparedPack &prepared, const QString &ou
         const auto t0 = std::chrono::steady_clock::now();
         uint64_t packed = 0;
         const size_t chunk = static_cast<size_t>(threads) * 4;
-        for (size_t first = 0; first < nseg; first += chunk) {
+        if (o.device == Device::Gpu) {
+            packed = gpuPackTrack(k, meta, files, windows, o.verify, threads, [&](uint64_t g, const std::vector<uint8_t> &bytes) { writeAll(out, ebml::cluster(g, k + 1, bytes)); });
+        }
+        for (size_t first = 0; first < (o.device == Device::Gpu ? 0 : nseg); first += chunk) {
             const size_t count = std::min(chunk, nseg - first);
             std::vector<std::vector<uint8_t>> blocks(count);
             parallelFor(count, threads, [&](size_t i) {

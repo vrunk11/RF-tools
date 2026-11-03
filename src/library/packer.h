@@ -10,6 +10,8 @@
 
 #pragma once
 
+#include "device.h"
+
 #include <QString>
 
 #include <cstddef>
@@ -47,6 +49,8 @@ struct PackOptions
     // "auto" (from the extension), s16, r16, s8, r8, lds, or flac / ldf (decoded
     // with ffmpeg to raw 16-bit samples first).
     std::string format = "auto";
+    // Where the predictor runs.
+    Device device = Device::Cpu;
     // Threads coding segments; 0 for one per processor.
     unsigned threads = 0;
 };

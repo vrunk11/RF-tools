@@ -67,7 +67,7 @@ predictor, and a C++ tool is correct when it gives that crate's output.
 | Directory | Binaries | Purpose |
 | --- | --- | --- |
 | `src/rfx/` | `rfx` | The command line tool: `pack`, `unpack`, `info`, `merge`, `extract`, `remove`, `add` (ported from the Rust `rfx`; the FLAC variant goes through ffmpeg) |
-| `src/library/` | (static library `rfx-library`) | The format: container, metadata, predictor, range coder, lag tables, reference windows, packing, editing, unpacking, conversion. Shared by every tool |
+| `src/library/` | (static library `rfx-library`) | The format: container, metadata, predictor (CPU, and OpenCL in `kernel.cl`, loaded at run time), range coder, lag tables, reference windows, packing, editing, unpacking, conversion. Shared by every tool |
 | `tests/` | `rfx-library-tests`, `rfx-roundtrip-tests` | The unit tests (CTest label `unit`) |
 
 ### 1.2 Repository layout

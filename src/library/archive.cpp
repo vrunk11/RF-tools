@@ -10,7 +10,9 @@
 
 #include "archive.h"
 
+#include "capture.h"
 #include "ebml.h"
+#include "gpupipeline.h"
 #include "error.h"
 #include "parallel.h"
 #include "refwindow.h"
@@ -31,7 +33,6 @@ namespace rfx {
 
 namespace {
 
-constexpr size_t kHashChunk = size_t(1) << 24;
 
 template<typename... Args>
 std::string format(const char *pattern, Args... args)
@@ -47,20 +48,6 @@ std::string hexSha256(const std::vector<uint8_t> &data)
     return digest.toHex().toStdString();
 }
 
-// SHA-256 of the whole file, as 64 lower-case hex digits.
-std::string hashFile(PosFile &file, uint64_t size)
-{
-    QCryptographicHash hash(QCryptographicHash::Sha256);
-    std::vector<char> buf(kHashChunk);
-    uint64_t off = 0;
-    while (off < size) {
-        const size_t n = static_cast<size_t>(std::min<uint64_t>(size - off, buf.size()));
-        file.readAt(buf.data(), n, off);
-        hash.addData(QByteArrayView(buf.data(), static_cast<qsizetype>(n)));
-        off += n;
-    }
-    return hash.result().toHex().toStdString();
-}
 
 // The file name part of a name from the archive, which is data from outside:
 // no directory, and not a name that means one.
@@ -306,7 +293,10 @@ void unpackArchive(const QString &path, const QString &outdir, const UnpackOptio
         const size_t nseg = static_cast<size_t>((sm.words + s - 1) / s);
         const auto t0 = std::chrono::steady_clock::now();
         const auto &blocks = a.blocks(k);
-        parallelFor(nseg, threads, [&](size_t g) {
+        if (options.device == Device::Gpu) {
+            gpuUnpackTrack(k, a, windows, *outs[k], threads);
+        }
+        parallelFor(options.device == Device::Gpu ? 0 : nseg, threads, [&](size_t g) {
             const size_t s0 = g * s;
             const size_t n = std::min<size_t>(s, static_cast<size_t>(sm.words) - s0);
             const auto block = blocks.find(g);
@@ -335,7 +325,7 @@ void unpackArchive(const QString &path, const QString &outdir, const UnpackOptio
             outs[k]->writeAt(sm.tail.data(), sm.tail.size(), formatCovered(sm.format(), sm.size));
         }
         const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
-        const std::string got = hashFile(*outs[k], sm.size);
+        const std::string got = hashBytes(*outs[k], sm.size);
         if (got != sm.sha256) {
             throw Error(sm.name + ": SHA-256 differs from the original (" + got + " against " + sm.sha256 + ")");
         }

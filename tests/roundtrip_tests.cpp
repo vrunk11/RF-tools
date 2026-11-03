@@ -12,6 +12,7 @@
 #include "archive.h"
 #include "edit.h"
 #include "error.h"
+#include "opencl.h"
 #include "packer.h"
 #include "sampleformat.h"
 
@@ -191,6 +192,24 @@ void testTwoCapturesWithReference()
     CHECK(readAll(QDir(out).filePath("a.ddd.s16")) == a);
     CHECK(readAll(QDir(out).filePath("b.ddd.s16")) == b);
     CHECK(readAll(QDir(out).filePath("a.ddd.yaml")) == readAll(dir.filePath("a.ddd.yaml")));
+
+    // On a machine with an OpenCL GPU: the same archive from the GPU, byte for byte,
+    // and the same captures out of it.
+    try {
+        rfx::cl::Device::get();
+        rfx::PackOptions gpuOptions = options;
+        gpuOptions.device = rfx::Device::Gpu;
+        const QString onGpu = dir.filePath("two_gpu.rfx");
+        rfx::packCaptures({dir.filePath("a.ddd.s16"), dir.filePath("b.ddd.s16")}, onGpu, gpuOptions);
+        CHECK(readAll(onGpu) == readAll(archive));
+        rfx::UnpackOptions gpuUnpack;
+        gpuUnpack.device = rfx::Device::Gpu;
+        rfx::unpackArchive(archive, dir.filePath("out_gpu"), gpuUnpack);
+        CHECK(readAll(dir.filePath("out_gpu/a.ddd.s16")) == a);
+        CHECK(readAll(dir.filePath("out_gpu/b.ddd.s16")) == b);
+    } catch (const rfx::Error &e) {
+        std::fprintf(stderr, "no GPU test: %s\n", e.what());
+    }
 
     // Only the second track: the first is decoded as its reference and removed.
     const QString only = dir.filePath("only");

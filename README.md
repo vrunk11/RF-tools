@@ -13,12 +13,12 @@ these files directly. The sister project for what comes after the decoder is
 > legacy, with the reader of ld-decode). That crate is the reference: it defines the format, and
 > the C++ tools are correct when they give its output.
 >
-> **Ported so far** (`pack`, `unpack`, `info`, `merge`, `extract`, `remove`, `add`): what they write
-> is the same file, byte for byte, as the Rust tool writes from the same captures, and what they
-> read is checked by the SHA-256 of the captures. **Not ported yet**: the FLAC variant (`pack
-> --flac`, and reading such a file), `unpack --as` (other formats, `mflac`), the GPU predictor
-> (`--device gpu`), and the development commands of the Rust tool (`bench`, `noise`, `refsel`,
-> `lab`, `gpu-check`). There is no graphical application yet.
+> **Ported so far** (`pack`, `unpack`, `info`, `merge`, `extract`, `remove`, `add`, the FLAC
+> variant through ffmpeg, and the OpenCL predictor, `--device gpu`): what they write is the same
+> file, byte for byte, as the Rust tool writes from the same captures (on the CPU or on the GPU),
+> and what they read is checked by the SHA-256 of the captures. **Not ported**: the development
+> commands of the Rust tool (`bench`, `noise`, `refsel`, `lab`, `gpu-check`), and the native FLAC
+> reader of ld-decode. There is no graphical application yet.
 
 ## What the tools do
 
@@ -45,7 +45,7 @@ rfx extract disc.rfx -o two.rfx --only 0,2             # editing: extract, remov
 
 With several captures, `pack` needs the positions of the lines of each capture, which it gets by
 running ld-decode's pass 0 (`--ld-decode`, or `--pass0 dir` for dumps already made). `pack --flac`,
-`unpack --as flac|ldf|mflac|<raw format>` and the FLAC variant need ffmpeg (or `FFMPEG=path`).
+`unpack --as flac|ldf|mflac|<raw format>` and the FLAC variant need ffmpeg (or `FFMPEG=path`). `--device gpu` runs the predictor on an OpenCL GPU (`OpenCL.dll` or `libOpenCL.so.1` from the driver, loaded when used).
 
 ## Building
 

@@ -81,20 +81,27 @@ void ReferenceWindows::addReference(size_t k, size_t j, float weight, int64_t p0
 std::vector<float> ReferenceWindows::window(size_t k, int64_t s0, size_t n) const
 {
     const SourceMeta &sm = m_meta.sources[k];
-    const Preset pre = sm.preset();
     const size_t len = n + 2 * sm.taps;
-    std::vector<float> out(pre.channels() * len, 0.0f);
+    std::vector<float> out(sm.preset().channels() * len);
+    windowInto(k, s0, n, len, out.data());
+    return out;
+}
+
+void ReferenceWindows::windowInto(size_t k, int64_t s0, size_t n, size_t stride, float *out) const
+{
+    const SourceMeta &sm = m_meta.sources[k];
+    const size_t len = n + 2 * sm.taps;
+    std::fill(out, out + sm.preset().channels() * stride, 0.0f);
     const int64_t p0 = s0 - static_cast<int64_t>(sm.taps);
     const std::vector<size_t> tops = sm.tops();
     const float equal = 1.0f / static_cast<float>(std::max<size_t>(sm.refs.size(), 1));
     for (size_t idx = 0; idx < sm.refs.size(); ++idx) {
         const float w = sm.weights.size() == sm.refs.size() ? sm.weights[idx] : equal;
-        addReference(k, sm.refs[idx], w, p0, len, out.data());
+        addReference(k, sm.refs[idx], w, p0, len, out);
     }
     for (size_t c = 0; c < tops.size(); ++c) {
-        addReference(k, tops[c], 1.0f, p0, len, out.data() + (c + 1) * len);
+        addReference(k, tops[c], 1.0f, p0, len, out + (c + 1) * stride);
     }
-    return out;
 }
 
 std::vector<float> ReferenceWindows::windowWith(size_t k, int64_t s0, size_t n, const std::vector<std::pair<size_t, float>> &which) const
