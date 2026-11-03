@@ -12,6 +12,7 @@
 
 #include "opencl.h"
 #include "predictor.h"
+#include "rawarray.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -62,14 +63,14 @@ public:
     // Send `lens.size()` segments of `segment` values (samples, or residuals; the
     // tail of a short segment is padding), their reference windows (none without
     // references) and their real lengths.
-    void upload(GpuChunkBuffers &buffers, const std::vector<int32_t> &input, const std::vector<float> &window, const std::vector<int32_t> &lens);
+    void upload(GpuChunkBuffers &buffers, const RawArray<int32_t> &input, const RawArray<float> &window, const std::vector<int32_t> &lens);
     // mode 0: the predictions of the samples uploaded; 1: the samples whose
     // residuals were uploaded. The result stays on the device.
     void predict(GpuChunkBuffers &buffers, int mode);
-    std::vector<int32_t> download(const GpuChunkBuffers &buffers);
+    RawArray<int32_t> download(const GpuChunkBuffers &buffers);
 
     // The three steps in one call.
-    std::vector<int32_t> run(int mode, const std::vector<int32_t> &input, const std::vector<float> &window, const std::vector<int32_t> &lens);
+    RawArray<int32_t> run(int mode, const RawArray<int32_t> &input, const RawArray<float> &window, const std::vector<int32_t> &lens);
 
 private:
     std::shared_ptr<cl::Device> m_device;

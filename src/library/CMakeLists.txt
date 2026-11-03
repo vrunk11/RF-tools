@@ -26,6 +26,9 @@ add_library(rfx-library STATIC
 target_include_directories(rfx-library PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(rfx-library PUBLIC Qt6::Core)
 
+# Files of many gigabytes: 64-bit offsets with the C library on every system.
+target_compile_definitions(rfx-library PUBLIC _FILE_OFFSET_BITS=64)
+
 find_package(Threads REQUIRED)
 target_link_libraries(rfx-library PUBLIC Threads::Threads)
 

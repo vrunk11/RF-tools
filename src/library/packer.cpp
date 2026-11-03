@@ -34,11 +34,13 @@
 
 #include <algorithm>
 #include <chrono>
+#include <condition_variable>
 #include <cmath>
 #include <cstdio>
 #include <limits>
 #include <map>
 #include <memory>
+#include <mutex>
 
 namespace rfx {
 
@@ -57,6 +59,9 @@ constexpr float kChooseFloor = 0.2f;
 // The writer's limit on the references that get channels of their own is the
 // level's `ntop`; with fewer references than this the plain mean is kept.
 constexpr size_t kMinReferencesForChannels = 3;
+// Tracks packed at once on a GPU: the device works on one while the processor codes
+// another (each holds a chunk of up to a gigabyte).
+constexpr unsigned kGpuTracksAtOnce = 2;
 
 // Samples [s0, s0 + n) of track `k`, shifted and with the mean taken off.
 std::vector<int32_t> trackSamples(PosFile &file, const SourceMeta &sm, int64_t s0, size_t n)
@@ -263,6 +268,13 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
         std::fprintf(stderr, "hashing and scanning %zu files\n", toScan);
     }
     std::vector<CaptureStats> stats(inputs.size());
+    // The files are opened here, not in the workers: opening a QFile in a thread is slow.
+    std::vector<std::unique_ptr<PosFile>> scanned(inputs.size());
+    for (size_t i = 0; i < inputs.size(); ++i) {
+        if (!specs[i].carry) {
+            scanned[i] = std::make_unique<PosFile>(inputs[i], PosFile::Mode::Read);
+        }
+    }
     parallelFor(inputs.size(), threads, [&](size_t i) {
         if (specs[i].carry) {
             const SourceMeta &c = *specs[i].carry;
@@ -272,7 +284,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
             stats[i].mean = c.mean;
             stats[i].sampleSha = c.sampleSha256;
         } else {
-            stats[i] = captureStats(inputs[i], fmts[i]);
+            stats[i] = captureStats(*scanned[i], fmts[i]);
         }
     });
     phase("captures hashed and scanned");
@@ -302,8 +314,12 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
             }
             runPass0(o.ldDecode, inputs, hz ? *hz / 1e6 : o.rateMhz, formatName(fmts[0]), dir);
         }
+        phase("pass 0 directory ready");
         fields.resize(inputs.size());
-        parallelFor(inputs.size(), threads, [&](size_t i) { fields[i] = parsePass0(QDir(dir).filePath(QStringLiteral("pass0_%1.txt").arg(static_cast<qulonglong>(i)))); });
+        for (size_t i = 0; i < inputs.size(); ++i) {
+            fields[i] = parsePass0(QDir(dir).filePath(QStringLiteral("pass0_%1.txt").arg(static_cast<qulonglong>(i))));
+        }
+        phase("pass 0 parsed");
     }
     phase("pass 0 read, order planned or not yet");
     std::vector<std::optional<double>> noise(inputs.size());
@@ -521,6 +537,65 @@ std::vector<PackedTrack> writePrepared(PreparedPack &prepared, const QString &ou
     const ReferenceWindows windows(files, meta, prepared.tables);
     std::vector<PackedTrack> report;
     const size_t s = meta.segment;
+    if (o.device == Device::Gpu) {
+        // The tracks are independent when packing (their references are read from the
+        // captures, not from what was coded), so the device works on one while the
+        // processor codes another. They are written in order, each as soon as it and
+        // the ones before it are done.
+        const size_t n = meta.sources.size();
+        std::vector<PackedTrack> done(n);
+        std::mutex turnMutex;
+        std::condition_variable turnChanged;
+        size_t turn = 0;
+        bool aborted = false;
+        parallelFor(n, kGpuTracksAtOnce, [&](size_t k) {
+            const SourceMeta &sm = meta.sources[k];
+            try {
+                std::vector<std::pair<uint64_t, std::vector<uint8_t>>> blocks;
+                uint64_t packed = 0;
+                double secs = 0;
+                if (!copy[k]) {
+                    const auto t0 = std::chrono::steady_clock::now();
+                    packed = gpuPackTrack(k, meta, files, windows, o.verify, threads,
+                                          [&blocks](uint64_t g, const std::vector<uint8_t> &bytes) { blocks.emplace_back(g, bytes); });
+                    secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
+                }
+                std::unique_lock<std::mutex> lock(turnMutex);
+                turnChanged.wait(lock, [&] { return turn == k || aborted; });
+                if (aborted) {
+                    return;
+                }
+                if (copy[k]) {
+                    packed = copyBlocks(out, *copy[k]->archive, copy[k]->track, k);
+                    std::fprintf(stderr, "%s: %llu -> %llu bytes copied\n", sm.name.c_str(), static_cast<unsigned long long>(sm.size),
+                                 static_cast<unsigned long long>(packed));
+                } else {
+                    for (const auto &b : blocks) {
+                        writeAll(out, ebml::cluster(b.first, k + 1, b.second));
+                    }
+                    std::fprintf(stderr, "%s: %llu -> %llu bytes (%.3f bits/sample, %s%%), %zu reference(s), %.1f Msmp/s\n", sm.name.c_str(),
+                                 static_cast<unsigned long long>(sm.size), static_cast<unsigned long long>(packed),
+                                 static_cast<double>(packed) * 8.0 / static_cast<double>(std::max<uint64_t>(sm.words, 1)),
+                                 perCent(static_cast<double>(packed), static_cast<double>(sm.size)).c_str(), sm.refs.size(),
+                                 static_cast<double>(sm.words) / std::max(secs, 1e-9) / 1e6);
+                }
+                done[k] = {sm.name, sm.size, packed, sm.refs.size()};
+                ++turn;
+                turnChanged.notify_all();
+            } catch (...) {
+                {
+                    std::lock_guard<std::mutex> lock(turnMutex);
+                    aborted = true;
+                }
+                turnChanged.notify_all();
+                throw;
+            }
+        });
+        if (!out.flush()) {
+            throw Error("cannot write " + output.toStdString() + ": " + out.errorString().toStdString());
+        }
+        return done;
+    }
     for (size_t k = 0; k < meta.sources.size(); ++k) {
         const SourceMeta &sm = meta.sources[k];
         if (copy[k]) {

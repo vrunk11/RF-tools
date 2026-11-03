@@ -43,14 +43,31 @@ constexpr size_t kBufferSets = 3;
 // upload, kernel, download, code and write.
 std::atomic<uint64_t> g_busyMicros[5];
 
+struct Event
+{
+    int stage;
+    size_t chunk;
+    std::chrono::steady_clock::time_point start;
+    std::chrono::steady_clock::time_point end;
+};
+std::mutex g_eventMutex;
+std::vector<Event> g_events;
+
 class Busy
 {
 public:
-    explicit Busy(int stage) : m_stage(stage), m_start(std::chrono::steady_clock::now()) {}
-    ~Busy() { g_busyMicros[m_stage] += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now() - m_start).count()); }
+    Busy(int stage, size_t chunk = 0) : m_stage(stage), m_chunk(chunk), m_start(std::chrono::steady_clock::now()) {}
+    ~Busy()
+    {
+        const auto end = std::chrono::steady_clock::now();
+        g_busyMicros[m_stage] += static_cast<uint64_t>(std::chrono::duration_cast<std::chrono::microseconds>(end - m_start).count());
+        std::lock_guard<std::mutex> lock(g_eventMutex);
+        g_events.push_back({m_stage, m_chunk, m_start, end});
+    }
 
 private:
     int m_stage;
+    size_t m_chunk;
     std::chrono::steady_clock::time_point m_start;
 };
 
@@ -65,6 +82,22 @@ void reportBusy(const char *what, std::chrono::steady_clock::time_point wall)
     }
     std::fprintf(stderr, "  %s: wall %.2f s, read+window %.2f, upload %.2f, kernel %.2f, download %.2f, code+write %.2f\n", what,
                  std::chrono::duration<double>(std::chrono::steady_clock::now() - wall).count(), s[0], s[1], s[2], s[3], s[4]);
+    if (qgetenv("RFX_TIMING") != "2") {
+        std::lock_guard<std::mutex> lock(g_eventMutex);
+        g_events.clear();
+        return;
+    }
+    std::vector<Event> events;
+    {
+        std::lock_guard<std::mutex> lock(g_eventMutex);
+        events.swap(g_events);
+    }
+    std::sort(events.begin(), events.end(), [](const Event &a, const Event &b) { return a.start < b.start; });
+    static const char *names[5] = {"read+window", "upload", "kernel", "download", "code+write"};
+    for (const Event &e : events) {
+        std::fprintf(stderr, "    chunk %4zu %-11s %6.3f -> %6.3f\n", e.chunk, names[e.stage], std::chrono::duration<double>(e.start - wall).count(),
+                     std::chrono::duration<double>(e.end - wall).count());
+    }
 }
 
 // A queue of bounded length between two stages; closing it releases both sides.
@@ -124,10 +157,10 @@ struct Chunk
 {
     std::vector<size_t> segments;
     std::vector<int32_t> lens;
-    std::vector<int32_t> input;
-    std::vector<float> window;
+    RawArray<int32_t> input;
+    RawArray<float> window;
     // What the GPU returned.
-    std::vector<int32_t> output;
+    RawArray<int32_t> output;
     // The device buffers it holds from its upload to its download.
     std::unique_ptr<GpuChunkBuffers> buffers;
     std::exception_ptr error;
@@ -144,6 +177,7 @@ void runPipeline(size_t nseg, size_t segment, size_t windowLength, bool useRef, 
     Channel<ChunkPtr> built(1);
     Channel<ChunkPtr> predicted(1);
     std::thread producer([&] {
+        
         for (size_t first = 0; first < nseg; first += kChunkSegments) {
             auto c = std::make_unique<Chunk>();
             try {
@@ -152,12 +186,14 @@ void runPipeline(size_t nseg, size_t segment, size_t windowLength, bool useRef, 
                     c->segments.push_back(first + i);
                     c->lens.push_back(static_cast<int32_t>(std::min<uint64_t>(segment, words - (first + i) * segment)));
                 }
-                c->input.assign(count * segment, 0);
+                c->input = RawArray<int32_t>(count * segment);
                 if (useRef) {
-                    c->window.assign(count * windowLength, 0.0f);
+                    c->window = RawArray<float>(count * windowLength);
                 }
-                const Busy busy(0);
+                const Busy busy(0, first);
                 parallelFor(count, threads, [&](size_t i) {
+                    // The thread that fills a segment initialises its memory (the window fills its own).
+                    std::fill_n(&c->input[i * segment], segment, 0);
                     fill(first + i, &c->input[i * segment], useRef ? &c->window[i * windowLength] : nullptr);
                 });
             } catch (...) {
@@ -202,15 +238,15 @@ void runPipeline(size_t nseg, size_t segment, size_t windowLength, bool useRef, 
             throw Error("the device buffers are gone");
         }
         c.buffers = std::move(*buffers);
-        const Busy busy(1);
+        const Busy busy(1, c.segments.front());
         gpu.upload(*c.buffers, c.input, c.window, c.lens);
     });
     std::thread runner(stage, std::ref(uploaded), std::ref(ran), [&](Chunk &c) {
-        const Busy busy(2);
+        const Busy busy(2, c.segments.front());
         gpu.predict(*c.buffers, mode);
     });
     std::thread downloader(stage, std::ref(ran), std::ref(predicted), [&](Chunk &c) {
-        const Busy busy(3);
+        const Busy busy(3, c.segments.front());
         c.output = gpu.download(*c.buffers);
         pool.push(std::move(c.buffers));
     });
@@ -220,7 +256,7 @@ void runPipeline(size_t nseg, size_t segment, size_t windowLength, bool useRef, 
             if ((*item)->error) {
                 std::rethrow_exception((*item)->error);
             }
-            const Busy busy(4);
+            const Busy busy(4, (*item)->segments.front());
             consume(**item);
         }
     } catch (...) {
@@ -281,21 +317,22 @@ uint64_t gpuPackTrack(size_t k, const ArchiveMeta &meta, const std::vector<PosFi
             coded[i] = encodeResiduals(residuals[i]);
         });
         if (verifier) {
-            std::vector<int32_t> flat(b * s, 0);
+            RawArray<int32_t> flat(b * s);
             parallelFor(b, threads, [&](size_t i) {
                 std::vector<int32_t> back;
                 if (!decodeResiduals(coded[i].data(), coded[i].size(), static_cast<size_t>(c.lens[i]), back) || back != residuals[i]) {
                     throw Error("self-check failed: segment " + std::to_string(c.segments[i]) + " of " + sm.name + " does not decode to its residuals");
                 }
-                std::copy(back.begin(), back.end(), flat.begin() + static_cast<std::ptrdiff_t>(i * s));
+                std::fill_n(&flat[i * s], s, 0);
+                std::copy(back.begin(), back.end(), &flat[i * s]);
             });
-            const std::vector<int32_t> again = verifier->run(1, flat, c.window, c.lens);
-            for (size_t i = 0; i < b; ++i) {
+            const RawArray<int32_t> again = verifier->run(1, flat, c.window, c.lens);
+            parallelFor(b, threads, [&](size_t i) {
                 const size_t n = static_cast<size_t>(c.lens[i]);
-                if (!std::equal(again.begin() + static_cast<std::ptrdiff_t>(i * s), again.begin() + static_cast<std::ptrdiff_t>(i * s + n), c.input.begin() + static_cast<std::ptrdiff_t>(i * s))) {
+                if (!std::equal(&again[i * s], &again[i * s] + n, &c.input[i * s])) {
                     throw Error("self-check failed: segment " + std::to_string(c.segments[i]) + " of " + sm.name + " does not decode to itself on the GPU");
                 }
-            }
+            });
         }
         for (size_t i = 0; i < b; ++i) {
             packed += coded[i].size();

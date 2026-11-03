@@ -86,23 +86,39 @@ std::string hashBytes(PosFile &file, uint64_t size)
     return hash.finishHex();
 }
 
+namespace {
+
+// Feed `n` samples to `hash` as little-endian i32 (the hash of the samples, section 3).
+void hashSampleBlock(Sha256 &hash, const int32_t *samples, size_t n, std::vector<uint8_t> &scratch)
+{
+#if Q_BYTE_ORDER == Q_LITTLE_ENDIAN
+    (void) scratch;
+    hash.update(samples, n * 4);
+#else
+    scratch.resize(n * 4);
+    for (size_t i = 0; i < n; ++i) {
+        const uint32_t v = static_cast<uint32_t>(samples[i]);
+        scratch[4 * i] = static_cast<uint8_t>(v);
+        scratch[4 * i + 1] = static_cast<uint8_t>(v >> 8);
+        scratch[4 * i + 2] = static_cast<uint8_t>(v >> 16);
+        scratch[4 * i + 3] = static_cast<uint8_t>(v >> 24);
+    }
+    hash.update(scratch.data(), scratch.size());
+#endif
+}
+
+} // namespace
+
 std::string hashSamples(PosFile &file, SampleFormat fmt, uint64_t count)
 {
     Sha256 hash;
     std::vector<int32_t> buf(kSampleChunk);
-    std::vector<uint8_t> raw(buf.size() * 4);
+    std::vector<uint8_t> scratch;
     uint64_t at = 0;
     while (at < count) {
         const size_t n = static_cast<size_t>(std::min<uint64_t>(count - at, buf.size()));
         loadSamples(fmt, file, count, static_cast<int64_t>(at), buf.data(), n);
-        for (size_t i = 0; i < n; ++i) {
-            const uint32_t v = static_cast<uint32_t>(buf[i]);
-            raw[4 * i] = static_cast<uint8_t>(v);
-            raw[4 * i + 1] = static_cast<uint8_t>(v >> 8);
-            raw[4 * i + 2] = static_cast<uint8_t>(v >> 16);
-            raw[4 * i + 3] = static_cast<uint8_t>(v >> 24);
-        }
-        hash.update(raw.data(), 4 * n);
+        hashSampleBlock(hash, buf.data(), n, scratch);
         at += n;
     }
     return hash.finishHex();
@@ -111,12 +127,20 @@ std::string hashSamples(PosFile &file, SampleFormat fmt, uint64_t count)
 CaptureStats captureStats(const QString &path, SampleFormat fmt)
 {
     PosFile file(path, PosFile::Mode::Read);
+    return captureStats(file, fmt);
+}
+
+CaptureStats captureStats(PosFile &file, SampleFormat fmt)
+{
     CaptureStats st;
     st.size = file.size();
     const uint64_t words = formatSamples(fmt, st.size);
     st.sha = hashBytes(file, st.size);
     uint32_t orAll = 0;
     int64_t sum = 0;
+    // One pass over the samples gives the shift, the mean and the hash of the samples.
+    Sha256 sampleHash;
+    std::vector<uint8_t> scratch;
     std::vector<int32_t> vals(kSampleChunk);
     for (uint64_t at = 0; at < words;) {
         const size_t n = static_cast<size_t>(std::min<uint64_t>(words - at, vals.size()));
@@ -125,6 +149,7 @@ CaptureStats captureStats(const QString &path, SampleFormat fmt)
             orAll |= static_cast<uint32_t>(vals[i]);
             sum += vals[i];
         }
+        hashSampleBlock(sampleHash, vals.data(), n, scratch);
         at += n;
     }
     if (orAll != 0) {
@@ -133,7 +158,7 @@ CaptureStats captureStats(const QString &path, SampleFormat fmt)
         }
     }
     st.mean = words == 0 ? 0 : static_cast<int32_t>(std::round(static_cast<double>(sum >> st.shift) / static_cast<double>(words)));
-    st.sampleSha = hashSamples(file, fmt, words);
+    st.sampleSha = sampleHash.finishHex();
     return st;
 }
 

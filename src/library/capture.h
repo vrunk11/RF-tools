@@ -39,6 +39,9 @@ struct CaptureStats
 };
 
 CaptureStats captureStats(const QString &path, SampleFormat fmt);
+// The same for a file already open: opening a QFile in a worker thread costs a
+// tenth of a second or more, so a caller that scans files in parallel opens them first.
+CaptureStats captureStats(PosFile &file, SampleFormat fmt);
 
 // SHA-256 of `count` samples as little-endian i32.
 std::string hashSamples(PosFile &file, SampleFormat fmt, uint64_t count);

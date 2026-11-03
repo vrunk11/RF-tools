@@ -55,7 +55,7 @@ GpuPredictor::GpuPredictor(const Preset &pre, bool useRef, size_t segment)
     std::memcpy(&m_lam, &pre.lamBits, sizeof(float));
 }
 
-void GpuPredictor::upload(GpuChunkBuffers &b, const std::vector<int32_t> &input, const std::vector<float> &window, const std::vector<int32_t> &lens)
+void GpuPredictor::upload(GpuChunkBuffers &b, const RawArray<int32_t> &input, const RawArray<float> &window, const std::vector<int32_t> &lens)
 {
     b.segments = lens.size();
     b.input.ensure(input.size() * 4);
@@ -85,15 +85,15 @@ void GpuPredictor::predict(GpuChunkBuffers &b, int mode)
     m_kernelQueue->finish();
 }
 
-std::vector<int32_t> GpuPredictor::download(const GpuChunkBuffers &b)
+RawArray<int32_t> GpuPredictor::download(const GpuChunkBuffers &b)
 {
-    std::vector<int32_t> out(b.segments * m_segment);
+    RawArray<int32_t> out(b.segments * m_segment);
     m_downloadQueue->read(b.output, out.data(), out.size() * 4);
     m_downloadQueue->finish();
     return out;
 }
 
-std::vector<int32_t> GpuPredictor::run(int mode, const std::vector<int32_t> &input, const std::vector<float> &window,
+RawArray<int32_t> GpuPredictor::run(int mode, const RawArray<int32_t> &input, const RawArray<float> &window,
                                        const std::vector<int32_t> &lens)
 {
     if (!m_own) {
