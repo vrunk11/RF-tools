@@ -78,8 +78,8 @@ jobs:
 
           cmake --build build --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path build\bin\rfx-gui.exe)) {
-            Write-Error "rfx-gui.exe was not built"
+          if (-not (Test-Path build\bin\rfx.exe)) {
+            Write-Error "rfx.exe was not built"
             exit 1
           }
 
@@ -91,26 +91,24 @@ jobs:
           $stage = "dist\$name"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-          Copy-Item build\bin\rfx-gui.exe $stage
+          Copy-Item build\bin\rfx.exe $stage
 
-          # Qt runtime and plugins (platforms, iconengines, ...)
-          & windeployqt --release --no-translations --no-system-d3d-compiler --no-opengl-sw "$stage\rfx-gui.exe"
+          # Qt runtime
+          & windeployqt --release --no-translations "$stage\rfx.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           Copy-Item README.md, LICENSE $stage
 
-      # rfx-gui is a GUI-subsystem binary: --help goes to a message box, so the
-      # check is its --self-test, which builds the window and exits.
       - name: Smoke test packaged program
         shell: pwsh
         run: |
           $stage = Get-ChildItem -Path dist -Directory | Select-Object -First 1
-          & "$($stage.FullName)\rfx-gui.exe" --self-test
+          & "$($stage.FullName)\rfx.exe" --version
           if ($LASTEXITCODE -ne 0) {
-            Write-Host "::error::rfx-gui --self-test exited with $LASTEXITCODE"
+            Write-Host "::error::rfx --version exited with $LASTEXITCODE"
             exit 1
           }
-          Write-Host "rfx-gui: ok"
+          Write-Host "rfx: ok"
 
       - name: Create ZIP
         shell: pwsh

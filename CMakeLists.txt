@@ -82,6 +82,11 @@ if(ENABLE_NATIVE_OPTIMIZATION)
     endif()
 endif()
 
-find_package(Qt6 REQUIRED COMPONENTS Core Widgets)
+find_package(Qt6 REQUIRED COMPONENTS Core)
 
-add_subdirectory(src/rfx-gui)
+add_subdirectory(src/library)
+add_subdirectory(src/rfx)
+
+if(BUILD_TESTING)
+    add_subdirectory(tests)
+endif()

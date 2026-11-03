@@ -1,8 +1,0 @@
-[Desktop Entry]
-Type=Application
-Name=rfx-gui
-Comment=Look at and edit .rfx archives of LaserDisc RF captures
-Exec=rfx-gui
-Icon=rfx-gui
-Terminal=false
-Categories=AudioVideo;Video;Utility;

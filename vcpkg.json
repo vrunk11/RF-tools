@@ -13,18 +13,11 @@
           "name": "qtbase",
           "default-features": false,
           "features": [
-            "concurrent",
             "doubleconversion",
-            "freetype",
-            "gui",
-            "harfbuzz",
             "pcre2",
-            "png",
-            "thread",
-            "widgets"
+            "thread"
           ]
-        },
-        "qtsvg"
+        }
       ]
     }
   }

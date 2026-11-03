@@ -7,13 +7,20 @@ these files directly. The sister project for what comes after the decoder is
 [ld-decode-tools](https://github.com/vrunk11/ld-decode-tools).
 
 > [!NOTE]
-> The tools are written in C++17 with Qt 6, like ld-decode-tools; so far there is only a skeleton of the Qt application (`rfx-gui`). The
-> format is already in use through the Rust `rfx` crate of
+> The tools are written in C++17 with Qt 6, like ld-decode-tools. The command line tool `rfx` is
+> being ported from the Rust `rfx` crate of
 > [ld-decode-rust](https://github.com/vrunk11/ld-decode-rust) (`crates/rfx`, kept there as
 > legacy, with the reader of ld-decode). That crate is the reference: it defines the format, and
 > the C++ tools are correct when they give its output.
+>
+> **Ported so far** (`pack`, `unpack`, `info`, `merge`, `extract`, `remove`, `add`): what they write
+> is the same file, byte for byte, as the Rust tool writes from the same captures, and what they
+> read is checked by the SHA-256 of the captures. **Not ported yet**: the FLAC variant (`pack
+> --flac`, and reading such a file), `unpack --as` (other formats, `mflac`), the GPU predictor
+> (`--device gpu`), and the development commands of the Rust tool (`bench`, `noise`, `refsel`,
+> `lab`, `gpu-check`). There is no graphical application yet.
 
-## What the tools will do
+## What the tools do
 
 ### Archive
 *Several captures of one disc in one file*
@@ -26,13 +33,27 @@ these files directly. The sister project for what comes after the decoder is
 - **Other formats** - Give the captures back as `s16`, `r16`, `s8`, `r8`, `lds`, `flac` or `ldf`, or as the channels of FLAC files (eight a file) to look at in an audio program
 - **Metadata** - The whole metadata as YAML, and the `.yaml` files that sat beside the captures, without decoding a sample
 
+## Using `rfx`
+
+```bash
+rfx pack -o disc.rfx a.ddd.s16 b.ddd.s16 c.ddd.s16    # the cleanest capture is coded first
+rfx info disc.rfx                                      # what the file holds (--yaml: all the metadata)
+rfx unpack disc.rfx -d out                             # the captures back, checked by SHA-256
+rfx unpack disc.rfx --only 2 -d out                    # one track
+rfx extract disc.rfx -o two.rfx --only 0,2             # editing: extract, remove, merge, add
+```
+
+With several captures, `pack` needs the positions of the lines of each capture, which it gets by
+running ld-decode's pass 0 (`--ld-decode`, or `--pass0 dir` for dumps already made). `pack --flac`,
+`unpack --as flac|ldf|mflac|<raw format>` and the FLAC variant need ffmpeg (or `FFMPEG=path`).
+
 ## Building
 
 The tools build with CMake against Qt 6, as ld-decode-tools does. See [BUILD.md](BUILD.md):
 - `nix develop`, then `./build.sh` (Linux/macOS), for the reproducible Nix environment
 - `build.bat` (Windows), which fetches the dependencies through a project-local vcpkg
 
-Ready-made packages for Linux (tarball and AppImage), macOS (DMG) and Windows (ZIP) are built by the CI for every push and attached to each GitHub release.
+Ready-made packages for Linux (tarball), macOS (tarball) and Windows (ZIP) are built by the CI for every push and attached to each GitHub release.
 
 ## Important Notes
 

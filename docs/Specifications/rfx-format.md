@@ -449,3 +449,21 @@ the CPU's bits) unless `--no-verify` is given.
 | lag tables | `crates/rfx/src/align.rs` |
 | random-access reader for ld-decode | `crates/rfx/src/reader.rs` |
 | FLAC variant | `crates/rfx/src/flacmode.rs` |
+
+The C++ tools of this repository (`src/library/`) implement the same format and
+are checked against that implementation: packing the same captures gives the
+same file, byte for byte, and `tests/library_tests.cpp` holds the coded bytes of
+fixed segments, as the reference writes them, for every predictor level.
+
+| part | file |
+|------|------|
+| container | `src/library/ebml.cpp` |
+| metadata | `src/library/metadata.cpp` |
+| packing, unpacking, editing | `src/library/packer.cpp`, `archive.cpp`, `edit.cpp` |
+| sample formats | `src/library/sampleformat.cpp` |
+| predictor (CPU) | `src/library/predictor.cpp` |
+| segments | `src/library/segment.cpp` |
+| range coder, residual model | `src/library/rangecoder.h`, `residualmodel.cpp` |
+| lag tables | `src/library/lagtable.cpp` |
+| reference windows | `src/library/refwindow.cpp` |
+| FLAC variant (through ffmpeg) | `src/library/flacmode.cpp` |

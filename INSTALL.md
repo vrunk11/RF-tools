@@ -28,12 +28,12 @@ The build output will be available under `./result`.
 ### Run from the build output
 
 ```bash
-./result/bin/rfx-gui
+./result/bin/rfx --help
 ```
 
 ## Other platforms
 
-Packages for Linux (tarball and AppImage), macOS (DMG) and Windows (ZIP) are built by the CI for every
+Packages for Linux (tarball), macOS (tarball) and Windows (ZIP) are built by the CI for every
 push and attached to each GitHub release.
 
 ## Notes

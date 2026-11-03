@@ -39,8 +39,6 @@
 
           buildInputs = with pkgs; [
             qt6.qtbase
-            qt6.qtsvg
-            libGL
           ];
 
           cmakeBuildType = "Release";
@@ -57,16 +55,11 @@
             ninja
             pkg-config
             qt6.qtbase
-            qt6.qtsvg
-            libGL
             ffmpeg
             # Compile cache used by CI (CMAKE_CXX_COMPILER_LAUNCHER=ccache);
             # harmless when unused locally.
             ccache
           ];
-          shellHook = ''
-            export QT_PLUGIN_PATH=${pkgs.qt6.qtsvg}/lib/qt-6/plugins''${QT_PLUGIN_PATH:+:$QT_PLUGIN_PATH}
-          '';
         };
       }
     );

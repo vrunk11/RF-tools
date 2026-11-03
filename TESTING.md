@@ -9,7 +9,7 @@ slice and fails if a test carries neither.
 
 | Label | Tests | Where defined | Needs |
 | --- | --- | --- | --- |
-| `unit` | `rfx-gui-self-test` (the program starts, builds its window and exits; a placeholder until there are real tests) | `src/**/CMakeLists.txt` | the build only (runs without a screen) |
+| `unit` | `rfx-library-tests`: the range coder and residual model, lag tables, sample formats, the container, the metadata, the YAML numbers, and the predictor against what the reference codes (bit for bit) | `tests/CMakeLists.txt` | the build only |
 
 Add a `functional` label (and its slice in `.github/workflows/build-and-test.yml`) when there
 are tests that run the program end to end over fixtures.

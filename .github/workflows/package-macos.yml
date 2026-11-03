@@ -1,4 +1,5 @@
-# macOS package: rfx-gui.app with its Qt frameworks bundled, delivered as a DMG.
+# macOS package: the command line program with the Qt framework it needs beside
+# it, delivered as a tarball (a DMG when there is an application bundle).
 #
 # SPDX-License-Identifier: GPL-3.0-or-later
 
@@ -8,7 +9,7 @@ on:
   workflow_call:
     inputs:
       artifact_name:
-        description: Name of the uploaded DMG artifact
+        description: Name of the uploaded tarball artifact
         required: false
         default: rf-tools-macos
         type: string
@@ -76,33 +77,34 @@ jobs:
             -DAPP_BRANCH=github-actions \
             -DAPP_COMMIT=${{ steps.version.outputs.version }}
           cmake --build build --parallel
-          test -d build/bin/rfx-gui.app || { echo "::error::rfx-gui.app was not built"; exit 1; }
+          test -x build/bin/rfx || { echo "::error::rfx was not built"; exit 1; }
 
-      - name: Assemble app bundle
+      # macdeployqt works on application bundles only: the program is not one, so
+      # the Qt framework it loads is copied beside it and found through an rpath.
+      - name: Assemble package
         shell: bash
         run: |
           set -euo pipefail
+          name="rf-tools-${{ steps.version.outputs.version }}-macos-$(uname -m)"
           rm -rf package-root
-          mkdir -p package-root
-          cp -R build/bin/rfx-gui.app package-root/
+          mkdir -p "package-root/${name}/bin" "package-root/${name}/lib"
+          cp build/bin/rfx "package-root/${name}/bin/"
+          cp -R "${QT_ROOT_DIR}/lib/QtCore.framework" "package-root/${name}/lib/"
+          rm -rf "package-root/${name}/lib/QtCore.framework/Headers" "package-root/${name}/lib/QtCore.framework/Versions/A/Headers"
+          install_name_tool -add_rpath "@executable_path/../lib" "package-root/${name}/bin/rfx"
+          codesign --force --sign - --timestamp=none "package-root/${name}/lib/QtCore.framework"
+          codesign --force --sign - --timestamp=none "package-root/${name}/bin/rfx"
+          cp README.md LICENSE "package-root/${name}/"
+          echo "name=${name}" > package-root/name.env
 
-          # Bundles Qt and every non-system dylib into Contents/Frameworks and
-          # rewrites the load paths of the app to point there.
-          macdeployqt "$PWD/package-root/rfx-gui.app" -always-overwrite
-
-      - name: Re-sign app bundle
+      # (a library for both architectures has in the output of otool a line
+      # "path (architecture arm64):" for each of them, which is not a dependency:
+      # the lines that end with a colon are left out)
+      - name: Verify standalone package
         shell: bash
         run: |
-          APP_BUNDLE="$PWD/package-root/rfx-gui.app"
-          codesign --force --deep --sign - --timestamp=none "$APP_BUNDLE"
-          codesign --verify --deep --strict "$APP_BUNDLE"
-
-      # (a library for both architectures, as those of Qt Multimedia are, has in the output of otool a line "path (architecture arm64):"
-      # for each of them, which is not a dependency: the lines that end with a colon are left out)
-      - name: Verify standalone app bundle
-        shell: bash
-        run: |
-          APP_BUNDLE="$PWD/package-root/rfx-gui.app"
+          set -euo pipefail
+          source package-root/name.env
           FAIL=0
           while IFS= read -r target; do
             while IFS= read -r dep; do
@@ -117,53 +119,35 @@ jobs:
               esac
             done < <(otool -L "$target" | tail -n +2 | grep -v ":$" | awk '{print $1}')
           done < <(
-            find "$APP_BUNDLE/Contents/MacOS" -type f
-            find "$APP_BUNDLE/Contents/Frameworks" -type f -name "*.dylib" 2>/dev/null || true
+            echo "package-root/${name}/bin/rfx"
+            find "package-root/${name}/lib" -type f -perm -u+x
           )
           if [[ "$FAIL" -ne 0 ]]; then
             echo "Standalone verification failed" >&2
             exit 1
           fi
 
-      - name: Smoke test bundled program
+      - name: Smoke test packaged program
         shell: bash
-        env:
-          QT_QPA_PLATFORM: offscreen
         run: |
           set -euo pipefail
-          package-root/rfx-gui.app/Contents/MacOS/rfx-gui --self-test
-          echo "rfx-gui: ok"
+          source package-root/name.env
+          "package-root/${name}/bin/rfx" --version
+          echo "rfx: ok"
 
-      - name: Create DMG
+      - name: Create tarball
         shell: bash
         run: |
-          # macos-latest runners are Apple Silicon; name the artifact by the
-          # architecture actually built so Intel users are not misled.
-          DMG_NAME="rf-tools-${{ steps.version.outputs.version }}-macos-$(uname -m).dmg"
-          VOL_NAME="RF-tools ${{ steps.version.outputs.version }}"
-          rm -rf dmg-root
-          mkdir -p dmg-root dist
-          cp -R package-root/rfx-gui.app dmg-root/
-          cp README.md LICENSE dmg-root/
-          ln -s /Applications dmg-root/Applications
+          set -euo pipefail
+          source package-root/name.env
+          mkdir -p dist
+          tar -C package-root -czf "dist/${name}.tar.gz" "${name}"
+          ls -lh dist
 
-          # hdiutil intermittently reports "resource busy" on shared runners.
-          for attempt in 1 2 3 4 5; do
-            hdiutil detach "/Volumes/$VOL_NAME" -force > /dev/null 2>&1 || true
-            if hdiutil create -volname "$VOL_NAME" -srcfolder dmg-root -ov -format UDZO "dist/$DMG_NAME"; then
-              hdiutil verify "dist/$DMG_NAME"
-              ls -lh dist
-              exit 0
-            fi
-            echo "hdiutil create failed (attempt $attempt); retrying..." >&2
-            sleep $((attempt * 5))
-          done
-          exit 1
-
-      - name: Upload DMG artifact
+      - name: Upload tarball artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
-          path: dist/*.dmg
+          path: dist/*.tar.gz
           if-no-files-found: error
           retention-days: ${{ inputs.retention_days }}

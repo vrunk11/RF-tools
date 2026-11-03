@@ -75,16 +75,14 @@ jobs:
       - name: Build package
         run: nix build .# --print-build-logs
 
-      # The program starts, builds its window and exits, with no display.
+      # The program starts and reports its version.
       - name: Smoke test packaged program
         shell: bash
-        env:
-          QT_QPA_PLATFORM: offscreen
         run: |
           set -euo pipefail
           ls -l result/bin
-          ./result/bin/rfx-gui --self-test
-          echo "rfx-gui: ok"
+          ./result/bin/rfx --version
+          echo "rfx: ok"
 
   test-gate:
     name: Unit Tests

@@ -66,8 +66,9 @@ predictor, and a C++ tool is correct when it gives that crate's output.
 
 | Directory | Binaries | Purpose |
 | --- | --- | --- |
-| `src/rfx-gui/` | `rfx-gui` | Qt 6 Widgets application for `.rfx` archives. For now a skeleton (a window) that gives the CI something to build, test and package |
-| `src/library/` | (none yet) | Shared code of the tools, as a static library, when there is some |
+| `src/rfx/` | `rfx` | The command line tool: `pack`, `unpack`, `info`, `merge`, `extract`, `remove`, `add` (ported from the Rust `rfx`; the FLAC variant goes through ffmpeg) |
+| `src/library/` | (static library `rfx-library`) | The format: container, metadata, predictor, range coder, lag tables, reference windows, packing, editing, unpacking, conversion. Shared by every tool |
+| `tests/` | `rfx-library-tests`, `rfx-roundtrip-tests` | The unit tests (CTest label `unit`) |
 
 ### 1.2 Repository layout
 
@@ -208,17 +209,16 @@ All in `.github/workflows/`, entered through `main.yml` (the same as ld-decode-t
 | --- | --- | --- |
 | `main.yml` | push (all branches, `v*` tags), PR, dispatch | Orchestrates everything below |
 | `build-and-test.yml` | always | Static checks (SPDX on new files, script syntax, flake eval); `nix build` with a smoke test; dev-shell build + `unit` CTest slice + staged install |
-| `package-linux.yml` | push / dispatch | Qt 6.9 build → linuxdeploy → tarball + AppImage |
-| `package-macos.yml` | push / dispatch | Qt 6.9 build → `macdeployqt` → DMG |
+| `package-linux.yml` | push / dispatch | Qt 6.9 build → linuxdeploy → tarball |
+| `package-macos.yml` | push / dispatch | Qt 6.9 build → QtCore framework beside the program → tarball |
 | `package-windows.yml` | push / dispatch | MSVC + Qt 6.9 → `windeployqt` → ZIP |
 | `release-from-artifact.yml` | `v*` tags | One GitHub release with every platform's package |
 
-The smoke tests run `rfx-gui --self-test` (a hidden option that builds the window and exits),
-because the program is a GUI and `--help` opens a message box on Windows.
+The smoke tests run `rfx --version` on the packaged program.
 
 Before proposing build-system or dependency changes, read the platform workflow they affect
 and say in the PR what was validated locally and what only CI can show (e.g. Windows/MSVC,
-macOS, the AppImage). If documentation and a working workflow disagree, the workflow is right
+macOS, linuxdeploy). If documentation and a working workflow disagree, the workflow is right
 — flag the mismatch.
 
 ## 8. Licensing

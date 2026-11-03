@@ -1,8 +1,10 @@
 # Portable Linux package: the program built against an official Qt and bundled
-# with its libraries by linuxdeploy, shipped two ways from one AppDir:
+# with its libraries by linuxdeploy, shipped as a tarball of the AppDir:
 #
 #   rf-tools-<version>-linux-x86_64.tar.gz   run from usr/bin
-#   rfx-gui-<version>-x86_64.AppImage        double-clickable
+#
+# (The command line tools have no desktop file or icon, so no AppImage until
+# there is a graphical application.)
 #
 # The Nix package (build-and-test.yml) is what Nix users get; this one is for
 # everyone else, so it deliberately does not use Nix: Nix store paths are not
@@ -54,11 +56,7 @@ jobs:
         shell: bash
         run: |
           sudo apt-get update
-          sudo apt-get install -y \
-            ninja-build pkg-config \
-            libgl1-mesa-dev libxkbcommon-dev libxkbcommon-x11-0 \
-            libxcb-cursor0 libxcb-icccm4 libxcb-image0 libxcb-keysyms1 \
-            libxcb-randr0 libxcb-render-util0 libxcb-shape0 libxcb-xinerama0
+          sudo apt-get install -y ninja-build pkg-config libgl1-mesa-dev
 
       - name: Install Qt
         uses: jurplel/install-qt-action@48d3ad6db93f3627c8ee7a0454bc6f3744f7e730 # v4.3.1
@@ -80,7 +78,7 @@ jobs:
             -DAPP_BRANCH=github-actions \
             -DAPP_COMMIT=${{ steps.version.outputs.version }}
           cmake --build build --parallel
-          test -x build/bin/rfx-gui || { echo "::error::rfx-gui was not built"; exit 1; }
+          test -x build/bin/rfx || { echo "::error::rfx was not built"; exit 1; }
 
       - name: Install into AppDir
         shell: bash
@@ -96,20 +94,15 @@ jobs:
             "$base/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage"
           curl -fsSL -o tools-bin/linuxdeploy-plugin-qt \
             "$base/linuxdeploy-plugin-qt/releases/download/continuous/linuxdeploy-plugin-qt-x86_64.AppImage"
-          curl -fsSL -o tools-bin/linuxdeploy-plugin-appimage \
-            "$base/linuxdeploy-plugin-appimage/releases/download/continuous/linuxdeploy-plugin-appimage-x86_64.AppImage"
           chmod +x tools-bin/*
           echo "$PWD/tools-bin" >> "$GITHUB_PATH"
 
-      - name: Bundle libraries and build AppImage
+      - name: Bundle libraries
         shell: bash
         env:
           # Runners have no FUSE; the AppImage tools unpack themselves instead.
           APPIMAGE_EXTRACT_AND_RUN: 1
           QMAKE: ${{ env.QT_ROOT_DIR }}/bin/qmake
-          # The bundle must start with no display, for the smoke test below.
-          EXTRA_PLATFORM_PLUGINS: libqoffscreen.so
-          LDAI_OUTPUT: rfx-gui-${{ steps.version.outputs.version }}-x86_64.AppImage
         run: |
           set -euo pipefail
 
@@ -122,21 +115,14 @@ jobs:
 
           linuxdeploy --appdir AppDir \
             "${exe_args[@]}" \
-            --desktop-file AppDir/usr/share/applications/rfx-gui.desktop \
-            --icon-file AppDir/usr/share/icons/hicolor/scalable/apps/rfx-gui.svg \
-            --plugin qt \
-            --output appimage
+            --plugin qt
 
       - name: Smoke test bundled program
         shell: bash
-        env:
-          QT_QPA_PLATFORM: offscreen
         run: |
           set -euo pipefail
-          AppDir/usr/bin/rfx-gui --self-test
-          echo "rfx-gui (AppDir): ok"
-          APPIMAGE_EXTRACT_AND_RUN=1 ./rfx-gui-*.AppImage --self-test
-          echo "rfx-gui AppImage: ok"
+          AppDir/usr/bin/rfx --version
+          echo "rfx (AppDir): ok"
 
       - name: Assemble artifacts
         shell: bash
@@ -148,15 +134,12 @@ jobs:
           cp README.md LICENSE "dist/${name}/"
           tar -C dist -czf "dist/${name}.tar.gz" "${name}"
           rm -rf "dist/${name}"
-          mv rfx-gui-*.AppImage dist/
           ls -lh dist
 
       - name: Upload Linux artifact
         uses: actions/upload-artifact@v7
         with:
           name: ${{ inputs.artifact_name }}
-          path: |
-            dist/*.tar.gz
-            dist/*.AppImage
+          path: dist/*.tar.gz
           if-no-files-found: error
           retention-days: ${{ inputs.retention_days }}
