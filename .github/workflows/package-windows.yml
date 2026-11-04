@@ -78,7 +78,7 @@ jobs:
 
           cmake --build build --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          foreach ($exe in "rfx.exe", "rf-requantize.exe") {
+          foreach ($exe in "rfx.exe", "rf-requantize.exe", "rf-analyse.exe") {
             if (-not (Test-Path "build\bin\$exe")) {
               Write-Error "$exe was not built"
               exit 1
@@ -93,10 +93,11 @@ jobs:
           $stage = "dist\$name"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-          Copy-Item build\bin\rfx.exe, build\bin\rf-requantize.exe $stage
+          Copy-Item build\bin\rfx.exe, build\bin\rf-requantize.exe, build\bin\rf-analyse.exe $stage
 
-          # Qt runtime
-          & windeployqt --release --no-translations "$stage\rfx.exe"
+          # Qt runtime (the programs sit in one directory and share it; the window
+          # needs Widgets and the platform plugin, which windeployqt adds for it)
+          & windeployqt --release --no-translations "$stage\rfx.exe" "$stage\rf-analyse.exe"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
           Copy-Item README.md, LICENSE $stage
@@ -112,7 +113,15 @@ jobs:
               exit 1
             }
           }
-          Write-Host "rfx, rf-requantize: ok"
+          # The window is not started: there is no screen here. It must be there, with
+          # the Qt it needs.
+          foreach ($file in "rf-analyse.exe", "Qt6Widgets.dll", "platforms\qwindows.dll") {
+            if (-not (Test-Path "$($stage.FullName)\$file")) {
+              Write-Host "::error::$file is not in the package"
+              exit 1
+            }
+          }
+          Write-Host "rfx, rf-requantize, rf-analyse: ok"
 
       - name: Create ZIP
         shell: pwsh

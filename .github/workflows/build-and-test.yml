@@ -83,7 +83,10 @@ jobs:
           ls -l result/bin
           ./result/bin/rfx --version
           ./result/bin/rf-requantize --version
-          echo "rfx, rf-requantize: ok"
+          # The window starts on the offscreen platform, writes a picture of itself and quits.
+          QT_QPA_PLATFORM=offscreen ./result/bin/rf-analyse --screenshot "${RUNNER_TEMP:-/tmp}/rf-analyse.png"
+          test -s "${RUNNER_TEMP:-/tmp}/rf-analyse.png"
+          echo "rfx, rf-requantize, rf-analyse: ok"
 
   test-gate:
     name: Unit Tests

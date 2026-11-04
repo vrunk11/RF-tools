@@ -14,8 +14,11 @@
           "default-features": false,
           "features": [
             "doubleconversion",
+            "gui",
             "pcre2",
-            "thread"
+            "testlib",
+            "thread",
+            "widgets"
           ]
         }
       ]

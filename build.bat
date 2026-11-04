@@ -171,6 +171,36 @@ set "VCPKG_BIN=%CD%\build\vcpkg_installed\%TRIPLET%\bin"
 if /i "%BUILD_TYPE%"=="Debug" set "VCPKG_BIN=%CD%\build\vcpkg_installed\%TRIPLET%\debug\bin"
 if exist "%VCPKG_BIN%" copy /y "%VCPKG_BIN%\*.dll" "build\bin\" >nul
 
+rem Without vcpkg's runtime (USE_SYSTEM_QT=1) the DLLs come from the Qt that
+rem CMake was pointed at (CMAKE_PREFIX_PATH): through its windeployqt, which also
+rem adds the plugins the window needs (platforms), or, where that Qt has none (a
+rem vcpkg install), by copying its DLLs and pointing a qt.conf at its plugins.
+if not exist "%VCPKG_BIN%" (
+    set "QT_PREFIX="
+    for /f "tokens=2 delims==" %%P in ('findstr /b /c:"CMAKE_PREFIX_PATH:" build\CMakeCache.txt 2^>nul') do (
+        set "PREFIX_LIST=%%P"
+        for %%Q in ("!PREFIX_LIST:;=" "!") do if not defined QT_PREFIX if exist "%%~Q\bin\Qt6Core.dll" set "QT_PREFIX=%%~Q"
+    )
+    if defined QT_PREFIX (
+        if exist "!QT_PREFIX!\bin\windeployqt.exe" (
+            for %%E in (rfx rf-requantize rf-analyse) do (
+                if exist "build\bin\%%E.exe" "!QT_PREFIX!\bin\windeployqt.exe" --no-translations "build\bin\%%E.exe" >nul
+            )
+        ) else (
+            copy /y "!QT_PREFIX!\bin\*.dll" "build\bin\" >nul
+            for %%L in ("!QT_PREFIX!\Qt6\plugins" "!QT_PREFIX!\plugins") do if exist "%%~L\platforms" (
+                set "PLUGIN_DIR=%%~L"
+                > "build\bin\qt.conf" (
+                    echo [Paths]
+                    echo Plugins=!PLUGIN_DIR:\=/!
+                )
+            )
+        )
+    ) else (
+        echo Note: no Qt prefix found in build\CMakeCache.txt; the Qt DLLs are not copied.
+    )
+)
+
 rem MinGW's own runtime, for the same reason: build\bin then runs without
 rem depending on which MinGW (if any) is on PATH.
 if defined GCC_DIR (

@@ -55,7 +55,7 @@ uses fast-math or fused multiply-add (`-ffp-contract=off`), native tuning includ
 
 - `vcpkg/` is cloned and bootstrapped on first run (ignored by git). It must be a real
   `git clone`: vcpkg resolves the `builtin-baseline` in `vcpkg.json` from its own history.
-- `vcpkg.json` lists the libraries, plus Qt 6 (qtbase, Core only) under the `qt` feature. They are
+- `vcpkg.json` lists the libraries, plus Qt 6 (qtbase: Core, and Gui and Widgets for `rf-analyse`, with Qt Test for its tests) under the `qt` feature. They are
   installed into `build/vcpkg_installed/` during configure. **The first run builds Qt from
   source and takes a long time**; later runs reuse vcpkg's binary cache.
 - The compiler is MSVC when `cl.exe` is on `PATH` (an "x64 Native Tools Command Prompt for
