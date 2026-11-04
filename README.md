@@ -6,24 +6,6 @@ decoding itself stays in [ld-decode](https://github.com/vrunk11/ld-decode-rust),
 these files directly. The sister project for what comes after the decoder is
 [ld-decode-tools](https://github.com/vrunk11/ld-decode-tools).
 
-> [!NOTE]
-> The tools are written in C++17 with Qt 6, like ld-decode-tools. The command line tool `rfx` was
-> ported from the Rust `rfx` crate of
-> [ld-decode-rust](https://github.com/vrunk11/ld-decode-rust). That crate is the reference: it
-> defines the format, and the C++ tools are correct when they give its output. Its writer (pack,
-> unpack, merge, extract, remove, add, the GPU packing pipeline and the experiments) is kept on the
-> branch `legacy/rfx-packer`; on `vrunk11_main` only its reader remains (`crates/rfx`), the one
-> ld-decode uses.
->
-> **Ported** (`pack`, `unpack`, `info`, `merge`, `extract`, `remove`, `add`, the FLAC variant
-> through ffmpeg, the OpenCL predictor with `--device gpu`, and the diagnostics `noise`, `refsel`,
-> `bench` and `gpu-check`): what they write is the same file, byte for byte, as the Rust tool writes
-> from the same captures (on the CPU or on the GPU), what `noise` and `refsel` print is the same
-> text, and what they read is checked by the SHA-256 of the captures. **Not ported**: the `lab`
-> experiments of the Rust tool, research on possible changes of the residual model, the lag tables
-> and the predictor, which are not part of the format; they stay on `legacy/rfx-packer`. There is
-> no graphical application yet.
-
 ## What the tools do
 
 ### Archive
