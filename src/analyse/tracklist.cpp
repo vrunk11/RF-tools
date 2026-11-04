@@ -16,6 +16,7 @@
 #include <QApplication>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QPainterPath>
 #include <QStyle>
 #include <QStyleOptionViewItem>
 #include <QStyledItemDelegate>
@@ -51,10 +52,28 @@ public:
         p->setPen(line);
         p->drawLine(option.rect.bottomLeft(), option.rect.bottomRight());
 
-        QStyleOptionViewItem box = option;
-        box.rect = QRect(option.rect.left() + 10, option.rect.top() + (option.rect.height() - 16) / 2, 16, 16);
-        box.state = (option.state & ~QStyle::State_HasFocus) | (index.data(Qt::CheckStateRole).toInt() == Qt::Checked ? QStyle::State_On : QStyle::State_Off) | QStyle::State_Enabled;
-        QApplication::style()->drawPrimitive(QStyle::PE_IndicatorItemViewItemCheck, &box, p);
+        // The check box is drawn here, in the colour of the track: the style would draw it in its own accent colour, which is not the
+        // one of the bar and of the tint beside it.
+        const QRectF box(option.rect.left() + 10.5, option.rect.top() + (option.rect.height() - 15) / 2.0 + 0.5, 15, 15);
+        p->setRenderHint(QPainter::Antialiasing, true);
+        if (shown) {
+            p->setPen(Qt::NoPen);
+            p->setBrush(trackColor);
+            p->drawRoundedRect(box, 3, 3);
+            // the tick, dark on a light colour and light on a dark one
+            p->setPen(QPen(trackColor.lightnessF() > 0.6 ? QColor(30, 30, 30) : QColor(255, 255, 255), 2.0, Qt::SolidLine, Qt::RoundCap, Qt::RoundJoin));
+            p->setBrush(Qt::NoBrush);
+            QPainterPath tick;
+            tick.moveTo(box.left() + 3.5, box.top() + 8);
+            tick.lineTo(box.left() + 6.5, box.top() + 11);
+            tick.lineTo(box.left() + 11.5, box.top() + 4.5);
+            p->drawPath(tick);
+        } else {
+            p->setPen(QPen(trackColor, 1.5));
+            p->setBrush(Qt::NoBrush);
+            p->drawRoundedRect(box, 3, 3);
+        }
+        p->setRenderHint(QPainter::Antialiasing, false);
 
         p->setRenderHint(QPainter::Antialiasing, true);
         p->setBrush(trackColor);
