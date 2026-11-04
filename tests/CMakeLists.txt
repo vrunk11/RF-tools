@@ -27,3 +27,13 @@ add_executable(rfx-roundtrip-tests roundtrip_tests.cpp)
 target_link_libraries(rfx-roundtrip-tests PRIVATE rfx-library Qt6::Core)
 add_test(NAME rfx-roundtrip-tests COMMAND rfx-roundtrip-tests)
 set_tests_properties(rfx-roundtrip-tests PROPERTIES LABELS unit)
+
+# The window of rf-packer, and the work it has done by the program itself (needs Qt Widgets and Qt Test).
+if(TARGET rf-packer-gui AND TARGET Qt6::Test)
+    add_executable(rf-packer-tests packer_tests.cpp)
+    target_link_libraries(rf-packer-tests PRIVATE rf-packer-gui Qt6::Widgets Qt6::Test)
+    target_compile_definitions(rf-packer-tests PRIVATE PACKER_PROGRAM="$<TARGET_FILE:rf-packer>")
+    add_dependencies(rf-packer-tests rf-packer)
+    add_test(NAME rf-packer-tests COMMAND rf-packer-tests)
+    set_tests_properties(rf-packer-tests PROPERTIES LABELS unit ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()

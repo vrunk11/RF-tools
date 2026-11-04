@@ -64,6 +64,7 @@ DeviationView::DeviationView(Session *session, QWidget *parent) : QWidget(parent
     setMouseTracking(true);
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     connect(session, &Session::changed, this, qOverload<>(&QWidget::update));
+    connect(session, &Session::rfSpeedChanged, this, qOverload<>(&QWidget::update));
 }
 
 void DeviationView::setTracks(const QVector<int> &tracks)
@@ -82,7 +83,7 @@ QVector<int> DeviationView::curves() const
     // reference itself as the line of no deviation.
     for (int k = 0; k < m_session->trackCount(); ++k) {
         const bool wanted = m_tracks.isEmpty() ? m_session->visible(k) : m_tracks.contains(k);
-        if (wanted && m_session->inArchive(k)) {
+        if (wanted && (m_session->inArchive(k) || m_session->rfSpeed())) {
             out.push_back(k);
         }
     }
@@ -131,7 +132,7 @@ void DeviationView::paintEvent(QPaintEvent *)
     double biggest = 0.0;
     for (int k : tracks) {
         std::vector<double> s(static_cast<size_t>(columns), 0.0);
-        if (m_session->lagTable(k)) {
+        if (m_session->hasSpeed(k)) {
             const qint64 words = static_cast<qint64>(m_session->track(k).words);
             for (int c = 0; c < columns; ++c) {
                 const qint64 at = static_cast<qint64>(static_cast<double>(c) / (columns - 1) * static_cast<double>(m_session->totalSamples()));
@@ -184,11 +185,30 @@ void DeviationView::paintEvent(QPaintEvent *)
         const std::vector<double> &s = speeds[i];
         const qint64 words = static_cast<qint64>(m_session->track(k).words);
         const int drawnColumns = std::min<int>(columns, static_cast<int>(static_cast<double>(words) / static_cast<double>(std::max<qint64>(1, m_session->totalSamples())) * columns) + 1);
-        p.setPen(QPen(c, 1.5));
+        // The colour follows the height: brighter and more saturated as the speed goes up above 0, darker as it goes down below it.
+        const auto shade = [&](double v) {
+            // A square root, so that even a small deviation shows: the colour is at its brightest or darkest well before the edge.
+            const double raw = std::clamp(v / range, -1.0, 1.0);
+            const double t = (raw < 0.0 ? -1.0 : 1.0) * std::pow(std::abs(raw), 0.5);
+            float h;
+            float sat;
+            float val;
+            float alpha;
+            c.getHsvF(&h, &sat, &val, &alpha);
+            if (t >= 0.0) {
+                sat = static_cast<float>(sat + (1.0 - sat) * t);
+                val = static_cast<float>(val + (1.0 - val) * t);
+            } else {
+                sat = static_cast<float>(sat * (1.0 + t * 0.3));
+                val = static_cast<float>(val * (1.0 + t * 0.75));
+            }
+            return QColor::fromHsvF(std::max(h, 0.0f), sat, val, alpha);
+        };
         QPointF previous;
         for (int col = 0; col < drawnColumns; ++col) {
             const QPointF pt(plotLeft() + static_cast<double>(col) / (columns - 1) * (plotRight() - plotLeft()), yOf(s[static_cast<size_t>(col)]));
             if (col) {
+                p.setPen(QPen(shade((s[static_cast<size_t>(col)] + s[static_cast<size_t>(col) - 1]) / 2.0), 2.0));
                 p.drawLine(previous, pt);
             }
             previous = pt;
@@ -209,8 +229,8 @@ void DeviationView::paintEvent(QPaintEvent *)
         QVector<ReadoutLine> lines;
         lines.push_back({tr("%1").arg(fmt::milliseconds(m_session->seconds(at))), QColor()});
         for (int k : tracks) {
-            const double speed = m_session->isReference(k) ? 0.0 : m_session->speedAt(k, at);
-            const QString v = m_session->isReference(k) ? QStringLiteral("0 (reference)") : signedPpm(speed) + QStringLiteral(" ppm");
+            const double speed = m_session->speedIsZero(k) ? 0.0 : m_session->speedAt(k, at);
+            const QString v = m_session->speedIsZero(k) ? QStringLiteral("0 (reference)") : signedPpm(speed) + QStringLiteral(" ppm");
             lines.push_back({QStringLiteral("%1: %2").arg(k).arg(v), m_session->color(k)});
         }
         drawReadout(p, rect(), m_hover, lines);
@@ -269,6 +289,12 @@ DeviationBlock::DeviationBlock(Session *session, QWidget *parent) : QWidget(pare
     row->addWidget(m_collapseButton);
     row->addWidget(m_subtitle);
     row->addStretch();
+    m_rfBox = new QCheckBox(tr("From RF"), m_head);
+    m_rfBox->setObjectName(QStringLiteral("rfSpeedBox"));
+    m_rfBox->setToolTip(tr("Measure the speed from the RF itself instead of reading it from the stored lag: the lines of every track are located from its signal (the pass 0 of ld-decode), and the speed is the spacing of the lines against the nominal one. It works for the reference and for a capture on its own, with or without a stored curve."));
+    m_rfBox->setChecked(session->rfSpeed());
+    connect(m_rfBox, &QCheckBox::toggled, this, [this](bool on) { m_session->setRfSpeed(on); });
+    row->addWidget(m_rfBox);
     row->addWidget(m_values);
     layout->addWidget(m_head);
     m_separator = makeSeparator(this);
@@ -284,6 +310,11 @@ DeviationBlock::DeviationBlock(Session *session, QWidget *parent) : QWidget(pare
     layout->addWidget(m_unavailable);
 
     connect(session, &Session::changed, this, &DeviationBlock::refresh);
+    connect(session, &Session::rfSpeedChanged, this, [this] {
+        const QSignalBlocker block(m_rfBox);
+        m_rfBox->setChecked(m_session->rfSpeed());
+        refresh();
+    });
     connect(session, &Session::opened, this, &DeviationBlock::refresh);
     refresh();
 }
@@ -306,14 +337,19 @@ void DeviationBlock::refresh()
 {
     const QVector<int> curves = m_view->curves();
     const bool any = !curves.isEmpty();
+    m_rfBox->setEnabled(m_session->isOpen());
     // The title bar is always there; without a curve it says why, and with the block reduced it is all there is.
     m_head->setVisible(true);
     m_viewFrame->setVisible(any && !m_collapsed);
     m_separator->setVisible(!(any && !m_collapsed));
     m_unavailable->setVisible(false);
     m_collapseButton->setEnabled(any);
-    m_subtitle->setText(any ? tr("in ppm against the reference: 0 = no TBC correction, above faster, below slower")
-                            : tr("not applicable: %1").arg(m_session->isOpen() ? tr("a capture on its own has no reference to be compared with") : tr("no file is open")));
+    QString subtitle = tr("in ppm against the reference: 0 = no TBC correction, above faster, below slower");
+    if (m_session->rfSpeed()) {
+        subtitle = m_session->rfSpeedBusy() ? tr("working out the speed from the RF2026") : tr("in ppm from the RF: the line spacing against the nominal one, above faster, below slower");
+    }
+    m_subtitle->setText(any ? subtitle
+                            : tr("not applicable: %1").arg(m_session->isOpen() ? tr("a capture on its own has no reference to be compared with (tick From RF)") : tr("no file is open")));
     // Without a curve, or reduced, the block is one line, and does not take room from the others.
     const bool reduced = !any || m_collapsed;
     const int line = m_head->sizeHint().height() + 2;
@@ -326,7 +362,7 @@ void DeviationBlock::refresh()
     QStringList values;
     const qint64 at = m_session->selection().center;
     for (int k : curves) {
-        const QString v = m_session->isReference(k) ? QStringLiteral("0 ref") : signedPpm(m_session->speedAt(k, at)) + QStringLiteral(" ppm");
+        const QString v = m_session->speedIsZero(k) ? QStringLiteral("0 ref") : signedPpm(m_session->speedAt(k, at)) + QStringLiteral(" ppm");
         values << QStringLiteral("<span style=\"color:%1\">&#9632;</span> %2 %3").arg(m_session->color(k).name()).arg(k).arg(v);
     }
     m_values->setText(values.join(QStringLiteral(" &nbsp; ")));

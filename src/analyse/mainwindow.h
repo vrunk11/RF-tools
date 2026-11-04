@@ -82,6 +82,8 @@ public:
 
     // "combined", "individual" (the selected track alone) or "lanes".
     void setView(const QString &name);
+    // Start with the speed measured from the RF (the "From RF" box of the speed deviation).
+    void setRfSpeed(bool on) { m_session->setRfSpeed(on); }
     // Wait for the views to be up to date and write what the window shows to a
     // PNG file; false if it could not be written.
     bool saveScreenshot(const QString &path);

@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include <QCheckBox>
 #include <QVector>
 #include <QFrame>
 #include <QToolButton>
@@ -82,6 +83,7 @@ private:
     QVector<int> m_tracks;
     QLabel *m_values;
     QLabel *m_subtitle;
+    QCheckBox *m_rfBox = nullptr;
     QLabel *m_unavailable;
     DeviationView *m_view;
     QWidget *m_head;

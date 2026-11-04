@@ -20,8 +20,11 @@
 #include <QPainter>
 #include <QScrollBar>
 
+#include "capture.h"
+
 #include <algorithm>
 #include <cmath>
+#include <optional>
 
 namespace {
 
@@ -32,13 +35,15 @@ constexpr int kFieldHeight = 38;
 class FieldWidget : public QWidget
 {
 public:
-    FieldWidget(const QString &key, const QString &value, QWidget *parent) : QWidget(parent), m_key(key), m_value(value)
+    // `lines` more than one: the value is wrapped over that many lines (what does not fit is cut; the tooltip has it all).
+    FieldWidget(const QString &key, const QString &value, QWidget *parent, int lines = 1) : QWidget(parent), m_key(key), m_value(value), m_lines(lines)
     {
         setToolTip(value);
-        setMinimumHeight(kFieldHeight);
+        setMinimumHeight(heightFor(lines));
     }
 
-    QSize sizeHint() const override { return {120, kFieldHeight}; }
+    static int heightFor(int lines) { return kFieldHeight + (lines - 1) * 16; }
+    QSize sizeHint() const override { return {120, heightFor(m_lines)}; }
 
 protected:
     void paintEvent(QPaintEvent *) override
@@ -52,7 +57,11 @@ protected:
         const QFont mono = QFontDatabase::systemFont(QFontDatabase::FixedFont);
         p.setFont(mono);
         p.setPen(palette().color(QPalette::Text));
-        p.drawText(QRect(0, 18, width(), 16), Qt::AlignLeft | Qt::AlignVCenter, QFontMetrics(mono).elidedText(m_value, Qt::ElideRight, width()));
+        if (m_lines > 1) {
+            p.drawText(QRect(0, 18, width(), 16 * m_lines), Qt::AlignLeft | Qt::AlignTop | Qt::TextWordWrap, m_value);
+        } else {
+            p.drawText(QRect(0, 18, width(), 16), Qt::AlignLeft | Qt::AlignVCenter, QFontMetrics(mono).elidedText(m_value, Qt::ElideRight, width()));
+        }
         p.setPen(palette().color(QPalette::Mid));
         p.drawLine(0, height() - 1, width(), height() - 1);
     }
@@ -60,6 +69,7 @@ protected:
 private:
     QString m_key;
     QString m_value;
+    int m_lines = 1;
 };
 
 } // namespace
@@ -78,6 +88,7 @@ MetadataPanel::MetadataPanel(Session *session, QWidget *parent) : QTreeWidget(pa
     connect(session, &Session::opened, this, &MetadataPanel::rebuild);
     connect(session, &Session::closed, this, &MetadataPanel::rebuild);
     connect(session, &Session::changed, this, &MetadataPanel::rebuild);
+    connect(session, &Session::rfSpeedChanged, this, &MetadataPanel::rebuild);
     connect(this, &QTreeWidget::itemExpanded, this, [this](QTreeWidgetItem *item) { m_expanded[item->text(0)] = true; });
     connect(this, &QTreeWidget::itemCollapsed, this, [this](QTreeWidgetItem *item) { m_expanded[item->text(0)] = false; });
 }
@@ -100,11 +111,11 @@ void MetadataPanel::rebuild()
     QString speed = tr("n/a");
     QString speedRange = tr("n/a");
     QString lag = tr("n/a");
-    if (m_session->isReference(k)) {
+    if (m_session->speedIsZero(k)) {
         speed = tr("0 ppm (the reference)");
         speedRange = tr("0");
         lag = tr("0 (the reference)");
-    } else if (table && !table->lag.empty()) {
+    } else if (m_session->rfSpeed() ? m_session->hasSpeed(k) : (table && !table->lag.empty())) {
         const auto ppm = [](double v) { return (std::round(v) > 0 ? QStringLiteral("+") : QString()) + QString::number(std::round(v), 'f', 0); };
         speed = ppm(m_session->speedAt(k, m_session->selection().center)) + tr(" ppm");
         double lo = 1e18;
@@ -116,7 +127,9 @@ void MetadataPanel::rebuild()
             hi = std::max(hi, v);
         }
         speedRange = ppm(lo) + tr(" to ") + ppm(hi) + tr(" ppm");
-        lag = fmt::signedNumber(table->lagAt(m_session->selection().center)) + tr(" samples");
+        if (table) {
+            lag = fmt::signedNumber(table->lagAt(m_session->selection().center)) + tr(" samples");
+        }
     }
     // The references, among all the tracks.
     QString refs;
@@ -132,10 +145,36 @@ void MetadataPanel::rebuild()
         predictor += tr(", ntop %1").arg(sm.ntop);
     }
 
+    // When the capture was made (the .yaml beside it, kept in the archive), when its file was last changed, and the note.
+    QString captured = tr("not known");
+    if (const std::optional<rfx::CaptureTimes> times = rfx::captureTimes(sm.sidecars)) {
+        const QDateTime from = QDateTime::fromString(QString::fromStdString(times->started), Qt::ISODate);
+        const QDateTime to = QDateTime::fromString(QString::fromStdString(times->finished), Qt::ISODate);
+        captured = from.isValid() ? from.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) : QString::fromStdString(times->started);
+        if (to.isValid()) {
+            captured += QStringLiteral(" \u2192 ") + (to.date() == from.date() ? to.toString(QStringLiteral("HH:mm:ss")) : to.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")));
+        }
+        if (times->durationSeconds > 0) {
+            captured += QStringLiteral(" (%1 s)").arg(QString::number(times->durationSeconds, 'f', 1));
+        }
+    }
+    QString fileDate = tr("not recorded");
+    if (m_session->inArchive(k)) {
+        if (sm.fileTime) {
+            const QDateTime when = QDateTime::fromString(QString::fromStdString(*sm.fileTime), Qt::ISODate).toLocalTime();
+            fileDate = when.isValid() ? when.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) : QString::fromStdString(*sm.fileTime);
+        }
+    } else {
+        const QDateTime when = QFileInfo(m_session->sourcePath(k)).lastModified();
+        fileDate = when.isValid() ? when.toString(QStringLiteral("yyyy-MM-dd HH:mm:ss")) : fileDate;
+    }
+    const QString notes = QString::fromStdString(sm.notes);
+
     struct Row
     {
         QString key;
         QString value;
+        int lines = 1;
     };
     struct Section
     {
@@ -149,6 +188,10 @@ void MetadataPanel::rebuild()
           {tr("Stored in .rfx"), fmt::bytes(stored) + QStringLiteral(" · ") + fmt::percent(stored, sm.size)},
           {tr("SHA-256"), sm.sha256.empty() ? QStringLiteral("-") : QString::fromStdString(sm.sha256).left(12) + QStringLiteral("…")},
           {tr("Sidecar"), sm.sidecars.empty() ? tr("none") : QString::fromStdString(sm.sidecars.front().name)}}},
+        {tr("Capture"),
+         {{tr("Captured"), captured},
+          {tr("File date"), fileDate},
+          {tr("Notes"), notes.isEmpty() ? tr("none") : notes, notes.isEmpty() ? 1 : 4}}},
         {tr("Samples"),
          {{tr("Duration"), fmt::duration(static_cast<double>(sm.words) / rate)},
           {tr("Count"), fmt::count(static_cast<qint64>(sm.words))},
@@ -181,8 +224,8 @@ void MetadataPanel::rebuild()
         top->setSizeHint(0, QSize(0, 24));
         for (const Row &r : s.rows) {
             auto *item = new QTreeWidgetItem(top);
-            item->setSizeHint(0, QSize(0, kFieldHeight));
-            setItemWidget(item, 0, new FieldWidget(r.key, r.value, this));
+            item->setSizeHint(0, QSize(0, FieldWidget::heightFor(r.lines)));
+            setItemWidget(item, 0, new FieldWidget(r.key, r.value, this, r.lines));
         }
         top->setExpanded(m_expanded.value(s.name, true));
     }

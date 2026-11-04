@@ -1639,7 +1639,7 @@ bool MainWindow::saveScreenshot(const QString &path)
     QElapsedTimer timer;
     timer.start();
     // The worker is asked again by every change; wait until it has caught up.
-    while ((!m_session->upToDate() || timer.elapsed() < 400) && timer.elapsed() < 20000) {
+    while ((!m_session->upToDate() || m_session->rfSpeedBusy() || timer.elapsed() < 400) && timer.elapsed() < 120000) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
         QThread::msleep(10);
     }

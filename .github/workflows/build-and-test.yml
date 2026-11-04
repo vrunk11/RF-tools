@@ -86,7 +86,9 @@ jobs:
           # The window starts on the offscreen platform, writes a picture of itself and quits.
           QT_QPA_PLATFORM=offscreen ./result/bin/rf-analyse --screenshot "${RUNNER_TEMP:-/tmp}/rf-analyse.png"
           test -s "${RUNNER_TEMP:-/tmp}/rf-analyse.png"
-          echo "rfx, rf-requantize, rf-analyse: ok"
+          QT_QPA_PLATFORM=offscreen ./result/bin/rf-packer --screenshot "${RUNNER_TEMP:-/tmp}/rf-packer.png"
+          test -s "${RUNNER_TEMP:-/tmp}/rf-packer.png"
+          echo "rfx, rf-requantize, rf-analyse, rf-packer: ok"
 
   test-gate:
     name: Unit Tests

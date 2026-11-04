@@ -147,6 +147,7 @@ private slots:
     void graphsFollowTheSizeAndShowValues();
     void compactModeAndSpectrumControls();
     void decodesCompressedCaptures();
+    void speedFromTheRf();
 
 private:
     QTemporaryDir m_dir;
@@ -162,8 +163,8 @@ void AnalyseGuiTests::initTestCase()
     QVERIFY(m_dir.isValid());
     write(m_dir.filePath("a.ddd.s16"), capture(0, 1));
     write(m_dir.filePath("b.ddd.s16"), capture(5, 2));
-    write(m_dir.filePath("a.ddd.yaml"), "{\n  \"sample_rate_hz\": 40000000\n}\n");
-    write(m_dir.filePath("b.ddd.yaml"), "{\n  \"sample_rate_hz\": 40000000\n}\n");
+    write(m_dir.filePath("a.ddd.yaml"), "{\n  \"sample_rate_hz\": 40000000,\n  \"started\": \"2026-10-27T07:33:55\",\n  \"finished\": \"2026-10-27T07:34:05\",\n  \"duration_seconds\": 10.793\n}\n");
+    write(m_dir.filePath("b.ddd.yaml"), "{\n  \"sample_rate_hz\": 40000000,\n  \"started\": \"2026-10-27T07:33:55\",\n  \"finished\": \"2026-10-27T07:34:05\",\n  \"duration_seconds\": 10.793\n}\n");
     QDir().mkpath(m_dir.filePath("p0"));
     write(m_dir.filePath("p0/pass0_0.txt"), pass0Dump(500));
     write(m_dir.filePath("p0/pass0_1.txt"), pass0Dump(495));
@@ -449,7 +450,7 @@ void AnalyseGuiTests::viewsHaveWhatToShow()
     // The metadata are those of the selected track.
     session->setSelected(1);
     auto *panel = w.findChild<MetadataPanel *>("metadataPanel");
-    QVERIFY(panel && panel->topLevelItemCount() == 3);
+    QVERIFY(panel && panel->topLevelItemCount() == 4);
 
     // The individual view, a track alone and every lane, and back.
     w.setView(QStringLiteral("individual"));
@@ -525,8 +526,18 @@ void AnalyseGuiTests::opensARawCapture()
     auto *list = w.findChild<TrackList *>("trackList");
     QCOMPARE(list->count(), 1);
     auto *panel = w.findChild<MetadataPanel *>("metadataPanel");
-    QCOMPARE(panel->topLevelItemCount(), 2);
+    QCOMPARE(panel->topLevelItemCount(), 3);
     QCOMPARE(panel->topLevelItem(0)->childCount(), 3);
+    // The section Capture: when it was made (from the .yaml beside it), the date of its file, and no note.
+    {
+        QTreeWidgetItem *capture = panel->topLevelItem(1);
+        QCOMPARE(capture->text(0), QStringLiteral("Capture"));
+        QCOMPARE(capture->childCount(), 3);
+        const auto value = [&](int row) { return panel->itemWidget(capture->child(row), 0)->toolTip(); };
+        QVERIFY2(value(0).contains("2026-10-27 07:33:55") && value(0).contains("07:34:05") && value(0).contains("10.8 s"), qPrintable(value(0)));
+        QVERIFY(!value(1).isEmpty() && value(1) != QStringLiteral("not recorded"));
+        QCOMPARE(value(2), QStringLiteral("none"));
+    }
     auto *deviation = w.findChild<DeviationBlock *>("combinedDeviation")->findChild<DeviationView *>();
     QVERIFY(deviation->curves().isEmpty());
     w.setView(QStringLiteral("lanes"));
@@ -651,9 +662,9 @@ void AnalyseGuiTests::opensSeveralFiles()
     QVERIFY(w.windowTitle().contains("other file"));
     auto *panel = w.findChild<MetadataPanel *>("metadataPanel");
     session->setSelected(2);
-    QCOMPARE(panel->topLevelItemCount(), 2);
-    session->setSelected(1);
     QCOMPARE(panel->topLevelItemCount(), 3);
+    session->setSelected(1);
+    QCOMPARE(panel->topLevelItemCount(), 4);
     auto *deviation = w.findChild<DeviationBlock *>("combinedDeviation")->findChild<DeviationView *>();
     QCOMPARE(deviation->curves(), (QVector<int>{0, 1}));
     w.setView(QStringLiteral("lanes"));
@@ -997,6 +1008,81 @@ void AnalyseGuiTests::compactModeAndSpectrumControls()
     w.setView(QStringLiteral("combined"));
     QTest::qWait(100);
     QVERIFY(stats->isVisible() && list->isVisible());
+}
+
+// The speed measured from the RF: a made-up NTSC capture whose lines are 0.1% shorter than the nominal ones (a disc going 1000 ppm
+// too fast) has that speed with the box ticked, with or without a reference, and none without it.
+void AnalyseGuiTests::speedFromTheRf()
+{
+    const double fs = 40e6;
+    const double fast = 1.001;
+    const double hlineUs = 227.5e6 / (315.0e6 / 88.0) / 2.0 / fast;
+    const double hz = 1.7e6 / 140.0;
+    const double blank = 8.1e6;
+    const double sync = blank - 40.0 * hz;
+    const size_t halfLines = 1050 * 3;
+    const size_t samples = static_cast<size_t>(static_cast<double>(halfLines) * hlineUs * fs / 1e6) + 4096;
+    std::vector<float> frequency(samples, static_cast<float>(blank));
+    auto pulse = [&](double startUs, double lengthUs) {
+        const size_t a = static_cast<size_t>(startUs * fs / 1e6);
+        const size_t b = std::min(samples, static_cast<size_t>((startUs + lengthUs) * fs / 1e6));
+        for (size_t i = a; i < b; ++i) {
+            frequency[i] = static_cast<float>(sync);
+        }
+    };
+    for (size_t h = 0; h < halfLines; ++h) {
+        const size_t inFrame = h % 1050;
+        const double at = static_cast<double>(h) * hlineUs;
+        const size_t vbiStart = inFrame < 525 ? 0 : 525;
+        if (inFrame >= vbiStart && inFrame < vbiStart + 18) {
+            const size_t k = inFrame - vbiStart;
+            pulse(at, (k >= 6 && k < 12) ? 27.1 : 2.3);
+        } else if (inFrame % 2 == 0) {
+            pulse(at, 4.7);
+        }
+    }
+    QByteArray pcm(static_cast<qsizetype>(samples * 2), 0);
+    double phase = 0.0;
+    uint32_t x = 7;
+    for (size_t i = 0; i < samples; ++i) {
+        phase = std::fmod(phase + 2.0 * M_PI * static_cast<double>(frequency[i]) / fs, 2.0 * M_PI);
+        x = x * 1664525u + 1013904223u;
+        const int16_t s = static_cast<int16_t>(std::lround(9000.0 * std::sin(phase) + (static_cast<double>(x >> 8) / 16777216.0 - 0.5) * 60.0));
+        std::memcpy(pcm.data() + 2 * i, &s, 2);
+    }
+    const QString path = m_dir.filePath("fast.ddd.s16");
+    write(path, pcm);
+
+    Session s;
+    Session *session = &s;
+    {
+        rfx::CaptureSpec spec;
+        spec.format = rfx::SampleFormat::S16;
+        spec.rateHz = fs;
+        spec.bits = 16;
+        QString error;
+        QVERIFY(s.openCapture(path, spec, &error));
+    }
+    QVERIFY(!session->rfSpeed());
+    QVERIFY(!session->hasSpeed(0));
+    session->setRfSpeed(true);
+    QElapsedTimer waited;
+    waited.start();
+    while ((session->rfSpeedBusy() || !session->hasSpeed(0)) && waited.elapsed() < 60000) {
+        QTest::qWait(20);
+    }
+    QVERIFY(session->hasSpeed(0));
+    const double ppm = session->speedAt(0, 2000000);
+    QVERIFY2(std::fabs(ppm - 1000.0) < 25.0, qPrintable(QString::number(ppm)));
+    QVERIFY(!session->speedIsZero(0));
+    if (qEnvironmentVariableIsSet("RF_TEST_PICTURE")) {
+        DeviationView view(session);
+        view.resize(800, 220);
+        view.grab().save(qEnvironmentVariable("RF_TEST_PICTURE"));
+    }
+    session->setRfSpeed(false);
+    QVERIFY(!session->hasSpeed(0));
+    session->close();
 }
 
 void AnalyseGuiTests::decodesCompressedCaptures()

@@ -27,6 +27,8 @@ these files directly. The sister project for what comes after the decoder is
 *The RF signal of every capture, without unpacking*
 - **rf-analyse** - A window in the style of ld-analyse and ld-stacker-gui for `.rfx` files and raw or FLAC captures, several at once (it asks for the format and the rate of the captures): the tracks as a list, the metadata of the selected one, the RF waveform with a bar to move, the spectrum and the statistics (mean amplitude, SNR, noise floor, effective bits) at the bar or over a zone, and the speed deviation of every track against its reference over the whole capture (0 is no TBC correction, above is faster, below slower). Only the segments on the screen are decoded. See [docs/rf-analyse.md](docs/rf-analyse.md)
 
+- **rf-packer** - A small window in the same style to make an `.rfx` file from captures, or to open one and change it: the tracks as a numbered list (add, remove, reorder), a codec choice (RFX, FLAC or raw files), the sample rate and bit depth of the list, an Info panel on the right with what is known of the selected track (name, rate, the date of the capture and of the file, the files that go with it) and a free note stored in its metadata, which can be edited or deleted. Processing asks for a copy or an overwrite. See [docs/rf-packer.md](docs/rf-packer.md)
+
 ## Using `rfx`
 
 ```bash
@@ -37,8 +39,7 @@ rfx unpack disc.rfx --only 2 -d out                    # one track
 rfx extract disc.rfx -o two.rfx --only 0,2             # editing: extract, remove, merge, add
 ```
 
-With several captures, `pack` needs the positions of the lines of each capture, which it gets by
-running ld-decode's pass 0 (`--ld-decode`, or `--pass0 dir` for dumps already made). `pack --flac`,
+With several captures, `pack` needs the positions of the lines of each capture, which it finds itself, from the RF of each capture (the pass 0 of ld-decode, ported: `rfsync`, with the same positions to the bit; `--pal` for a PAL disc). `--ld-decode program` runs ld-decode for it instead, and `--pass0 dir` uses dumps already made. `pack --flac`,
 `unpack --as flac|ldf|mflac|<raw format>` and the FLAC variant need ffmpeg (or `FFMPEG=path`). `--device gpu` runs the predictor on an OpenCL GPU (`OpenCL.dll` or `libOpenCL.so.1` from the driver, loaded when used).
 
 ## Using `rf-requantize`
@@ -64,6 +65,15 @@ rf-analyse disc.rfx --view lanes --screenshot lanes.png # a picture of the windo
 
 It needs Qt Widgets; where Qt has none, the command line tools are built without it. See [docs/rf-analyse.md](docs/rf-analyse.md).
 
+## Using `rf-packer`
+
+```bash
+rf-packer                      # an empty list: drop captures on it, then Create RFX…
+rf-packer disc.rfx             # the tracks of an archive: change them, then Process…
+```
+
+It needs Qt Widgets, as rf-analyse does. See [docs/rf-packer.md](docs/rf-packer.md).
+
 ## Building
 
 The tools build with CMake against Qt 6, as ld-decode-tools does. See [BUILD.md](BUILD.md):
@@ -83,6 +93,7 @@ Ready-made packages for Linux (tarball), macOS (tarball) and Windows (ZIP) are b
 - [docs/Specifications/rfx-format.md](docs/Specifications/rfx-format.md) - the `.rfx` format, enough to write a reader
 - [docs/rf-requantize.md](docs/rf-requantize.md) - requantising captures and `.rfx` files, and comparing the settings
 - [docs/rf-analyse.md](docs/rf-analyse.md) - the window that shows the waveform, spectrum, noise and drift of the tracks of an `.rfx` file
+- [docs/rf-packer.md](docs/rf-packer.md) - the window that makes an `.rfx` file from captures and changes the tracks and metadata of one
 
 Development: [BUILD.md](BUILD.md), [INSTALL.md](INSTALL.md), [TESTING.md](TESTING.md),
 [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).

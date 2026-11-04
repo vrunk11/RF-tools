@@ -1,6 +1,6 @@
 /******************************************************************************
  * format.h
- * rf-analyse - how the numbers are written
+ * Shared by the GUI programs - how the numbers are written
  *
  * SPDX-License-Identifier: GPL-3.0-or-later
  * SPDX-FileCopyrightText: 2026 RF-tools contributors

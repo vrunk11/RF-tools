@@ -37,7 +37,7 @@ move. A file of many gigabytes opens at once.
 | Where | What |
 | --- | --- |
 | Left | **Tracks**: a check box (show or hide the track in the views), the colour of the track, its name, and its duration and what it takes in the file. A click on a track selects it and shows its metadata; a click on the selected track hides them |
-| Next to it | **Source**: the metadata of the selected track, in three sections that fold: *File* (name, size, size stored in the `.rfx`, SHA-256, sidecar), *Samples* (duration, count, rate, format, shift and mean, bits carried) and *Coding* (order, references and weights, predictor, speed at the bar and its range, lag at the bar, origin) |
+| Next to it | **Source**: the metadata of the selected track, in sections that fold: *File* (name, size, size stored in the `.rfx`, SHA-256, sidecar), *Capture* (when it was captured, from the `.yaml`; the date of the file when it was packed; and the notes, a free text that [rf-packer](rf-packer.md) can write), *Samples* (duration, count, rate, format, shift and mean, bits carried) and *Coding* (order, references and weights, predictor, speed at the bar and its range, lag at the bar, origin) |
 | Right, tabs | **Combined**: every track shown, superposed. **Individual**: *Selected* shows the track selected alone; *All lanes* one lane for each track shown |
 | Zoom bar | Zoom out, zoom in, *Fit*; the width of the window in samples and microseconds; the vertical zoom of the waveform (×1 to ×8) |
 | Bottom | The navigation bar, and the status bar with the duration and the size of the file against its captures |
@@ -60,6 +60,13 @@ move. A file of many gigabytes opens at once.
   does not show; a jump (a sample lost or repeated) is a burst where it happened. It comes from
   the lag tables, without decoding. A click on the graph puts the bar there. A capture on its own
   has no reference and no curve.
+
+  **From RF** (a box in the title bar of the block, off to begin with; `--rf-speed` on the command line)
+  measures the speed from the signal itself instead, whether the stored curve is there or not: the lines of every track are
+  located from its RF (the pass 0 of ld-decode, ported: the same positions to the bit) and the speed is the spacing of the
+  lines of each field against the nominal one (63.556 us NTSC, 64 us PAL), in the same ppm, above faster and below slower.
+  The reference gets a curve of its own then, and so does a capture on its own. It is worked out in the background, a track
+  after the other (the title bar says so meanwhile), and kept until the files change. NTSC is tried first, then PAL.
 - **Statistics**: for every track, over the same stretch as the spectrum:
 
   | | |

@@ -78,7 +78,7 @@ jobs:
             -DAPP_BRANCH=github-actions \
             -DAPP_COMMIT=${{ steps.version.outputs.version }}
           cmake --build build --parallel
-          for exe in rfx rf-requantize rf-analyse; do
+          for exe in rfx rf-requantize rf-analyse rf-packer; do
             test -x "build/bin/${exe}" || { echo "::error::${exe} was not built"; exit 1; }
           done
 
@@ -127,7 +127,8 @@ jobs:
           AppDir/usr/bin/rf-requantize --version
           # The window is not started: there is no screen here. It must be bundled.
           test -x AppDir/usr/bin/rf-analyse
-          echo "rfx, rf-requantize, rf-analyse (AppDir): ok"
+          test -x AppDir/usr/bin/rf-packer
+          echo "rfx, rf-requantize, rf-analyse, rf-packer (AppDir): ok"
 
       - name: Assemble artifacts
         shell: bash

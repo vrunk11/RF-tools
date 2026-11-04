@@ -13,6 +13,7 @@
 #include "trackreader.h"
 
 #include <QApplication>
+#include <QIcon>
 
 #include <algorithm>
 #include <QCommandLineOption>
@@ -41,6 +42,8 @@ int main(int argc, char *argv[])
 {
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("rf-analyse"));
+    Q_INIT_RESOURCE(rf_analyse_resources);
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/Graphics/256-rf-analyse.png")));
     QCoreApplication::setOrganizationName(QStringLiteral("RF-tools"));
     QCoreApplication::setApplicationVersion(QStringLiteral(APP_VERSION " (" APP_BRANCH " " APP_COMMIT ")"));
 
@@ -64,6 +67,7 @@ int main(int argc, char *argv[])
     for (const QCommandLineOption *o : {&view, &screenshot, &size, &format, &rate, &bits}) {
         parser.addOption(*o);
     }
+    parser.addOption(QCommandLineOption(QStringLiteral("rf-speed"), QStringLiteral("Start with the speed deviation measured from the RF (the From RF box).")));
     parser.addOption(QCommandLineOption(QStringLiteral("force-dark-theme"), QStringLiteral("Force the dark theme, whatever the system and the setting say.")));
     parser.addPositionalArgument(QStringLiteral("file"), QStringLiteral("The .rfx files and the captures (.s16 .r16 .s8 .r8 .lds .flac .ldf) to open."),
                                  QStringLiteral("[file...]"));
@@ -141,6 +145,7 @@ int main(int argc, char *argv[])
         }
     }
     window.setView(parser.value(view));
+    window.setRfSpeed(parser.isSet(QStringLiteral("rf-speed")));
     if (parser.isSet(screenshot)) {
         return window.saveScreenshot(parser.value(screenshot)) ? 0 : kExitFailed;
     }

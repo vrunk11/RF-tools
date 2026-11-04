@@ -2,6 +2,7 @@
     <!-- The icons of ld-analyse and ld-stacker-gui, drawn from their SVG (kept beside, in Graphics/) at 22 px and
          two and three times that for the screens with more dots; PNG, so that Qt SVG is not needed. -->
     <qresource prefix="/icons">
+        <file>Graphics/256-rf-analyse.png</file>
         <file>Graphics/start-frame.png</file>
         <file>Graphics/start-frame@2x.png</file>
         <file>Graphics/start-frame@3x.png</file>

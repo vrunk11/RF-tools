@@ -11,6 +11,7 @@
 #include "session.h"
 
 #include "error.h"
+#include "rfsync.h"
 
 #include <QFileInfo>
 #include <QMetaObject>
@@ -247,9 +248,13 @@ bool Session::open(const std::vector<Source> &sources, QString *error)
     m_cursor = m_windowLength / 2;
     m_rangeEnd = -1;
     m_result = AnalysisResult();
+    m_speedStop = false;
     emit opened();
     refresh();
     startOverview();
+    if (m_rfSpeed) {
+        startRfSpeed();
+    }
     return true;
 }
 
@@ -265,10 +270,13 @@ void Session::close()
     {
         std::lock_guard<std::mutex> lock(m_overviewMutex);
         m_overview.clear();
+        m_rfCurves.clear();
+        m_rfStarted.clear();
     }
     m_sources.clear();
     m_tracks.clear();
     m_result = AnalysisResult();
+    m_rfBusy = 0;
     emit closed();
 }
 
@@ -691,6 +699,134 @@ bool Session::coarseWanted() const
     return !upToDate() && m_waiting.isValid() && m_waiting.elapsed() >= kCoarseAfterMs;
 }
 
+void Session::setRfSpeed(bool on)
+{
+    if (on == m_rfSpeed) {
+        return;
+    }
+    m_rfSpeed = on;
+    if (on) {
+        startRfSpeed();
+    }
+    emit rfSpeedChanged();
+}
+
+bool Session::hasSpeed(int k) const
+{
+    if (m_rfSpeed) {
+        std::lock_guard<std::mutex> lock(m_overviewMutex);
+        return static_cast<size_t>(k) < m_rfCurves.size() && m_rfCurves[static_cast<size_t>(k)] != nullptr;
+    }
+    return lagTable(k) != nullptr;
+}
+
+// The lines of every track are located from its RF, one track after the other on a thread of its own (the filters use all the
+// processors); what is made stays until the files change.
+void Session::startRfSpeed()
+{
+    struct Job
+    {
+        rfx::TrackReader *reader;
+        size_t local;
+        int track;
+        double rate;
+    };
+    std::vector<Job> jobs;
+    {
+        std::lock_guard<std::mutex> lock(m_overviewMutex);
+        m_rfCurves.resize(m_tracks.size());
+        m_rfStarted.resize(m_tracks.size(), false);
+        for (size_t k = 0; k < m_tracks.size(); ++k) {
+            if (m_rfStarted[k]) {
+                continue;
+            }
+            m_rfStarted[k] = true;
+            rfx::TrackReader *reader = m_sources[static_cast<size_t>(m_tracks[k].source)].reader.get();
+            const double rate = reader->meta().sources[m_tracks[k].local].rateHz;
+            jobs.push_back({reader, m_tracks[k].local, static_cast<int>(k), rate > 0 ? rate : m_rateHz});
+        }
+    }
+    if (jobs.empty()) {
+        return;
+    }
+    const quint64 id = m_openId.load();
+    m_rfBusy += static_cast<int>(jobs.size());
+    m_speedPool.setMaxThreadCount(1);
+    m_speedPool.start(QRunnable::create([this, jobs, id]() {
+        for (const Job &job : jobs) {
+            const auto stale = [this, id] { return m_openId.load() != id || m_speedStop.load(); };
+            std::shared_ptr<SpeedCurve> curve;
+            if (!stale()) {
+                try {
+                    // NTSC first; a PAL capture gives no field as NTSC.
+                    for (const rfx::VideoSystem system : {rfx::VideoSystem::Ntsc, rfx::VideoSystem::Pal}) {
+                        const std::vector<rfx::Field> fields = rfx::locateFields(*job.reader, job.local, job.rate, system, 0, &m_speedStop);
+                        const double nominal = rfx::nominalLineSamples(job.rate, system);
+                        auto made = std::make_shared<SpeedCurve>();
+                        for (const rfx::Field &f : fields) {
+                            if (f.lines.size() < 20) {
+                                continue;
+                            }
+                            // The line spacing over the field against the nominal one: shorter lines are a faster disc.
+                            const double spacing = (f.lines.back() - f.lines.front()) / static_cast<double>(f.lines.size() - 1);
+                            made->emplace_back((f.lines.front() + f.lines.back()) / 2.0, (nominal / spacing - 1.0) * 1e6);
+                        }
+                        if (!made->empty()) {
+                            curve = made;
+                            break;
+                        }
+                        if (stale()) {
+                            break;
+                        }
+                    }
+                } catch (const std::exception &) {
+                    // (this track has no speed to show)
+                }
+            }
+            if (!stale()) {
+                if (!curve) {
+                    curve = std::make_shared<SpeedCurve>();
+                }
+                std::lock_guard<std::mutex> lock(m_overviewMutex);
+                if (static_cast<size_t>(job.track) < m_rfCurves.size()) {
+                    m_rfCurves[static_cast<size_t>(job.track)] = curve;
+                }
+            }
+            --m_rfBusy;
+            QMetaObject::invokeMethod(this, [this, id] {
+                if (m_openId.load() == id) {
+                    emit rfSpeedChanged();
+                }
+            }, Qt::QueuedConnection);
+        }
+    }));
+}
+
+double Session::rfSpeedAt(int k, qint64 sample) const
+{
+    std::shared_ptr<const SpeedCurve> curve;
+    {
+        std::lock_guard<std::mutex> lock(m_overviewMutex);
+        if (static_cast<size_t>(k) < m_rfCurves.size()) {
+            curve = m_rfCurves[static_cast<size_t>(k)];
+        }
+    }
+    if (!curve || curve->empty()) {
+        return 0.0;
+    }
+    const double x = static_cast<double>(sample);
+    const auto next = std::lower_bound(curve->begin(), curve->end(), x, [](const std::pair<double, double> &p, double v) { return p.first < v; });
+    if (next == curve->begin()) {
+        return next->second;
+    }
+    if (next == curve->end()) {
+        return curve->back().second;
+    }
+    const auto before = next - 1;
+    const double t = (x - before->first) / (next->first - before->first);
+    return before->second + t * (next->second - before->second);
+}
+
 qint64 Session::speedWindow(int k) const
 
 {
@@ -704,6 +840,9 @@ qint64 Session::speedWindow(int k) const
 
 double Session::speedAt(int k, qint64 sample) const
 {
+    if (m_rfSpeed) {
+        return rfSpeedAt(k, sample);
+    }
     const rfx::LagTable *t = lagTable(k);
     if (!t) {
         return 0.0;

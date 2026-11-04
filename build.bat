@@ -183,7 +183,7 @@ if not exist "%VCPKG_BIN%" (
     )
     if defined QT_PREFIX (
         if exist "!QT_PREFIX!\bin\windeployqt.exe" (
-            for %%E in (rfx rf-requantize rf-analyse) do (
+            for %%E in (rfx rf-requantize rf-analyse rf-packer) do (
                 if exist "build\bin\%%E.exe" "!QT_PREFIX!\bin\windeployqt.exe" --no-translations "build\bin\%%E.exe" >nul
             )
         ) else (
