@@ -250,10 +250,93 @@ void testTwoCapturesWithReference()
 
 } // namespace
 
+// What is changed in a track on the way: its name, rate and note without coding anything, a track coded again at a level of
+// its own, and a capture added with its note.
+void testEditedTracks()
+{
+    QTemporaryDir dir;
+    const size_t samples = 3000000;
+    const QByteArray a = duplicatorCapture(samples, 0, 1);
+    const QByteArray b = duplicatorCapture(samples, 5, 2);
+    const QByteArray c = duplicatorCapture(samples, 9, 3);
+    writeFile(dir.filePath("a.ddd.s16"), a);
+    writeFile(dir.filePath("b.ddd.s16"), b);
+    writeFile(dir.filePath("c.ddd.s16"), c);
+    writeFile(dir.filePath("a.ddd.yaml"), "{\n  \"sample_rate_hz\": 40000000\n}\n");
+    QDir().mkpath(dir.filePath("p0"));
+    writeFile(dir.filePath("p0/pass0_0.txt"), pass0Dump(75, 20, 1000, 500));
+    writeFile(dir.filePath("p0/pass0_1.txt"), pass0Dump(75, 20, 1000, 495));
+    writeFile(dir.filePath("p0/pass0_2.txt"), pass0Dump(75, 20, 1000, 491));
+    rfx::PackOptions options = testOptions();
+    options.pass0Dir = dir.filePath("p0");
+    const QString archive = dir.filePath("two.rfx");
+    rfx::packCaptures({dir.filePath("a.ddd.s16"), dir.filePath("b.ddd.s16")}, archive, options);
+    {
+        // Packed: the date of each file is in the metadata, and there is no note.
+        rfx::Archive opened(archive);
+        CHECK(opened.meta().sources[0].fileTime.has_value());
+        CHECK(opened.meta().sources[0].notes.empty());
+    }
+
+    // Name, rate, note and the sidecar files, with nothing coded: the blocks are copied as they are.
+    {
+        std::vector<rfx::Pick> picks = rfx::pickAll({archive});
+        picks[0].edit.notes = std::string("first capture\nPioneer");
+        picks[1].edit.name = std::string("second.ddd.s16");
+        picks[1].edit.rateHz = 30e6;
+        picks[1].edit.sidecars = std::vector<rfx::Sidecar>{};
+        picks[0].edit.sidecars = std::vector<rfx::Sidecar>{};
+        const QString edited = dir.filePath("edited.rfx");
+        rfx::assembleArchives({archive}, picks, edited, options, std::nullopt);
+        rfx::Archive opened(edited);
+        CHECK(opened.meta().sources.size() == 2);
+        CHECK(opened.meta().sources[0].notes == "first capture\nPioneer");
+        CHECK(opened.meta().sources[1].name == "second.ddd.s16");
+        CHECK(opened.meta().sources[1].rateHz == 30e6);
+        CHECK(opened.meta().sources[0].sidecars.empty());
+        CHECK(opened.meta().sources[1].refs == std::vector<size_t>{0});
+        CHECK(opened.meta().sources[0].fileTime == rfx::Archive(archive).meta().sources[0].fileTime);
+        rfx::unpackArchive(edited, dir.filePath("out_edited"), rfx::UnpackOptions());
+        CHECK(readAll(dir.filePath("out_edited/a.ddd.s16")) == a);
+        CHECK(readAll(dir.filePath("out_edited/second.ddd.s16")) == b);
+        // The note can be taken away again.
+        std::vector<rfx::Pick> again = rfx::pickAll({edited});
+        again[0].edit.notes = std::string();
+        const QString cleared = dir.filePath("cleared.rfx");
+        rfx::assembleArchives({edited}, again, cleared, options, std::nullopt);
+        CHECK(rfx::Archive(cleared).meta().sources[0].notes.empty());
+    }
+
+    // A track coded again at a level of its own, and a capture added with its note and level; what comes out is what went in.
+    {
+        std::vector<rfx::Pick> picks = rfx::pickAll({archive});
+        picks[1].edit.recode = true;
+        picks[1].edit.level = 4;
+        picks.push_back(rfx::Pick::fresh(dir.filePath("c.ddd.s16")));
+        picks.back().edit.notes = std::string("added later");
+        picks.back().edit.level = 2;
+        picks.back().edit.rateHz = 40e6;
+        const QString more = dir.filePath("more.rfx");
+        rfx::assembleArchives({archive}, picks, more, options, std::nullopt);
+        rfx::Archive opened(more);
+        CHECK(opened.meta().sources.size() == 3);
+        CHECK(opened.meta().sources[2].notes == "added later");
+        CHECK(opened.meta().sources[2].rateHz == 40e6);
+        CHECK(opened.meta().sources[2].fileTime.has_value());
+        CHECK(opened.meta().sources[1].own != opened.meta().sources[2].own || opened.meta().sources[1].taps != opened.meta().sources[2].taps);
+        rfx::unpackArchive(more, dir.filePath("out_more"), rfx::UnpackOptions());
+        CHECK(readAll(dir.filePath("out_more/a.ddd.s16")) == a);
+        CHECK(readAll(dir.filePath("out_more/b.ddd.s16")) == b);
+        CHECK(readAll(dir.filePath("out_more/c.ddd.s16")) == c);
+    }
+}
+
 int main()
+
 {
     testEveryFormat();
     testTwoCapturesWithReference();
+    testEditedTracks();
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

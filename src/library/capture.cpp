@@ -16,6 +16,7 @@
 
 #include <QCryptographicHash>
 #include <QDir>
+#include <QRegularExpression>
 #include <QFile>
 #include <QFileInfo>
 #include <QProcess>
@@ -210,6 +211,32 @@ std::optional<double> sidecarRateHz(const std::vector<Sidecar> &sidecars)
             }
             start = end + 1;
         }
+    }
+    return std::nullopt;
+}
+
+std::optional<CaptureTimes> captureTimes(const std::vector<Sidecar> &sidecars)
+{
+    static const QRegularExpression started(QStringLiteral(R"re("started"\s*:\s*"([^"]+)")re"));
+    static const QRegularExpression finished(QStringLiteral(R"re("finished"\s*:\s*"([^"]+)")re"));
+    static const QRegularExpression duration(QStringLiteral(R"re("duration_seconds"\s*:\s*([0-9]+(?:\.[0-9]+)?))re"));
+    for (const Sidecar &sc : sidecars) {
+        const QString text = QString::fromUtf8(reinterpret_cast<const char *>(sc.data.data()), static_cast<qsizetype>(sc.data.size()));
+        const QRegularExpressionMatch s = started.match(text);
+        if (!s.hasMatch()) {
+            continue;
+        }
+        CaptureTimes times;
+        times.started = s.captured(1).toStdString();
+        const QRegularExpressionMatch f = finished.match(text);
+        if (f.hasMatch()) {
+            times.finished = f.captured(1).toStdString();
+        }
+        const QRegularExpressionMatch d = duration.match(text);
+        if (d.hasMatch()) {
+            times.durationSeconds = d.captured(1).toDouble();
+        }
+        return times;
     }
     return std::nullopt;
 }

@@ -123,6 +123,9 @@ the value given:
 | `sidecars` | array | files that sat beside the capture, kept whole: `{ "name", "sha256", "data": [bytes] }` (default empty; the Duplicator's `.yaml`, at most 1 MiB) |
 | `origin` | string or null | name of the compressed file (`.flac`, `.ldf`) the capture was decoded from, if it was (default null) |
 | `rate_hz` | number | sample rate of the capture in Hz, from its `.yaml` (`"sample_rate_hz"`) or given when packing; 0 if unknown (default 0) |
+| `notes` | string | a note about the capture, free text for people, UTF-8; written only when it is not empty (default empty) |
+| `bits` | integer | the bits the samples carry (the rest of each 16-bit sample is zero), as the person who packed it says it; written only when given (default absent, 0) |
+| `file_time` | string | when the file the capture was read from was last changed, as UTC in ISO 8601 (`"2023-05-16T18:03:54Z"`), taken when it was packed; written only when known (default absent) |
 
 Unknown fields are ignored. Tools that only want the metadata (`rfx info`,
 `rfx info --yaml`, `rfx unpack --meta`) read this one block and nothing else.

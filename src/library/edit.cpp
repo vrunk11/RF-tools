@@ -95,12 +95,33 @@ void assembleArchives(const std::vector<QString> &archives, const std::vector<Pi
     for (size_t k = 0; k < picks.size(); ++k) {
         const Pick &p = picks[k];
         if (!p.fromArchive) {
-            specs.emplace_back();
+            PackSpec fresh;
+            fresh.level = p.edit.level;
+            fresh.rateHz = p.edit.rateHz;
+            fresh.notes = p.edit.notes;
+            fresh.bits = p.edit.bits;
+            specs.push_back(fresh);
             copy.emplace_back();
             continue;
         }
         Archive &a = *opened[p.arch];
-        const SourceMeta &sm = a.meta().sources[p.src];
+        // The track as it will be written: what was asked changes its metadata, nothing else.
+        SourceMeta sm = a.meta().sources[p.src];
+        if (p.edit.name) {
+            sm.name = *p.edit.name;
+        }
+        if (p.edit.rateHz) {
+            sm.rateHz = *p.edit.rateHz;
+        }
+        if (p.edit.notes) {
+            sm.notes = *p.edit.notes;
+        }
+        if (p.edit.bits) {
+            sm.bits = *p.edit.bits;
+        }
+        if (p.edit.sidecars) {
+            sm.sidecars = *p.edit.sidecars;
+        }
         std::vector<size_t> moved;
         bool allMoved = true;
         for (const size_t j : sm.refs) {
@@ -111,7 +132,7 @@ void assembleArchives(const std::vector<QString> &archives, const std::vector<Pi
             }
             moved.push_back(it->second);
         }
-        const bool forced = recodeFrom && p.arch >= *recodeFrom;
+        const bool forced = (recodeFrom && p.arch >= *recodeFrom) || p.edit.recode;
         if (allMoved && !forced) {
             SourceMeta m = sm;
             m.refs = moved;
@@ -125,7 +146,9 @@ void assembleArchives(const std::vector<QString> &archives, const std::vector<Pi
             specs.push_back({m, true});
             copy.push_back(CopiedTrack{&a, p.src});
         } else {
-            specs.push_back({sm, false});
+            PackSpec again{sm, false};
+            again.level = p.edit.level;
+            specs.push_back(again);
             copy.emplace_back();
         }
     }

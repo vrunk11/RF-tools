@@ -22,6 +22,7 @@ add_library(rfx-library STATIC
     requantize.cpp
     requantizejob.cpp
     requantizer.cpp
+    rfsync.cpp
     residualmodel.cpp
     sampleformat.cpp
     segment.cpp

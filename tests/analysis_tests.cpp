@@ -11,9 +11,11 @@
 
 #include "analysis.h"
 #include "error.h"
+#include "capture.h"
 #include "ffmpeg.h"
 #include "packer.h"
 #include "posfile.h"
+#include "rfsync.h"
 #include "sampleformat.h"
 #include "trackreader.h"
 
@@ -380,6 +382,27 @@ void testCaptureReader()
     }
 }
 
+// When a capture was made comes from the .yaml beside it (the Domesday Duplicator's).
+void testCaptureTimes()
+{
+    const std::string yaml = "\"capture\":\n  \"file\": \"a.ddd.s16\"\n  \"sample_rate_hz\": 75000000\n  \"started\": \"2026-10-27T07:33:55\"\n  \"finished\": \"2026-10-27T07:34:05\"\n  \"duration_seconds\": 10.793\n";
+    rfx::Sidecar other;
+    other.name = "x.txt";
+    other.data = {'n', 'o'};
+    rfx::Sidecar sc;
+    sc.name = "a.ddd.yaml";
+    sc.data.assign(yaml.begin(), yaml.end());
+    const std::optional<rfx::CaptureTimes> times = rfx::captureTimes({other, sc});
+    CHECK(times.has_value());
+    if (times) {
+        CHECK(times->started == "2026-10-27T07:33:55");
+        CHECK(times->finished == "2026-10-27T07:34:05");
+        CHECK(std::fabs(times->durationSeconds - 10.793) < 1e-9);
+    }
+    CHECK(!rfx::captureTimes({other}).has_value());
+    CHECK(!rfx::captureTimes({}).has_value());
+}
+
 // The header of a compressed capture says its rate (in kHz, as ld-decode writes it) and its sample size.
 void testCompressedHeader()
 {
@@ -483,6 +506,88 @@ void testCompressedReader()
 
 } // namespace
 
+// The RF of an NTSC disc, made up: the carrier is 8.1 MHz at blanking and 7.614 MHz in a sync pulse; the lines are 63.556 us apart,
+// the vertical interval has its equalizing and broad pulses at every half line, and the fields come as the standard says (a full
+// line, then a half line, between the last horizontal sync and the interval).
+void testRfSync()
+{
+    const double fs = 40e6;
+    const double hlineUs = 227.5e6 / (315.0e6 / 88.0) / 2.0;
+    const double hz = 1.7e6 / 140.0;
+    const double blank = 8.1e6;
+    const double sync = blank - 40.0 * hz;
+    const size_t halfLines = 1050 * 3;
+    const size_t samples = static_cast<size_t>(static_cast<double>(halfLines) * hlineUs * fs / 1e6) + 4096;
+    std::vector<float> frequency(samples, static_cast<float>(blank));
+    auto pulse = [&](double startUs, double lengthUs) {
+        const size_t a = static_cast<size_t>(startUs * fs / 1e6);
+        const size_t b = std::min(samples, static_cast<size_t>((startUs + lengthUs) * fs / 1e6));
+        for (size_t i = a; i < b; ++i) {
+            frequency[i] = static_cast<float>(sync);
+        }
+    };
+    for (size_t h = 0; h < halfLines; ++h) {
+        const size_t inFrame = h % 1050;
+        const double at = static_cast<double>(h) * hlineUs;
+        const size_t vbiStart = inFrame < 525 ? 0 : 525;
+        if (inFrame >= vbiStart && inFrame < vbiStart + 18) {
+            const size_t k = inFrame - vbiStart;
+            pulse(at, (k >= 6 && k < 12) ? 27.1 : 2.3);
+        } else if (inFrame % 2 == 0) {
+            pulse(at, 4.7);
+        }
+    }
+    // Frequency to samples, phase by phase (a little noise keeps the filters honest).
+    std::vector<int16_t> pcm(samples);
+    Lcg noise{7};
+    double phase = 0.0;
+    for (size_t i = 0; i < samples; ++i) {
+        phase += 2.0 * 3.14159265358979323846 * static_cast<double>(frequency[i]) / fs;
+        phase = std::fmod(phase, 2.0 * 3.14159265358979323846);
+        pcm[i] = static_cast<int16_t>(std::lround(9000.0 * std::sin(phase) + (uniform(noise) - 0.5) * 60.0));
+    }
+    QTemporaryDir dir;
+    CHECK(dir.isValid());
+    const QString path = dir.filePath("ntsc.ddd.s16");
+    {
+        QFile f(path);
+        CHECK(f.open(QIODevice::WriteOnly));
+        f.write(reinterpret_cast<const char *>(pcm.data()), static_cast<qint64>(pcm.size() * 2));
+    }
+    rfx::CaptureSpec spec;
+    spec.format = rfx::SampleFormat::S16;
+    spec.rateHz = fs;
+    spec.bits = 16;
+    rfx::TrackReader reader(path, spec);
+    const std::vector<rfx::Field> fields = rfx::locateFields(reader, 0, fs, rfx::VideoSystem::Ntsc, 2);
+    // Six fields were made; the first and the last are not complete.
+    CHECK(fields.size() >= 4);
+    for (size_t i = 0; i < fields.size(); ++i) {
+        CHECK(fields[i].first == (i % 2 == 0) || fields[i].first == (i % 2 == 1));
+        if (i > 0) {
+            CHECK(fields[i].first != fields[i - 1].first);
+        }
+        CHECK(fields[i].lines.size() > 250);
+        // The lines are 63.556 us apart: 2542.2 samples at 40 MHz.
+        for (size_t l = 1; l < 200 && l < fields[i].lines.size(); ++l) {
+            CHECK(std::abs(fields[i].lines[l] - fields[i].lines[l - 1] - 2542.22) < 1.5);
+        }
+    }
+    // The dump is the one ld-decode writes: "true None" and the positions as hexadecimal bits.
+    const std::string dump = rfx::formatPass0(fields);
+    CHECK(dump.rfind("true None ", 0) == 0 || dump.rfind("false None ", 0) == 0);
+    // A capture with no video in it gives no field, and no error.
+    std::vector<int16_t> silence(1 << 20, 0);
+    const QString quiet = dir.filePath("quiet.ddd.s16");
+    {
+        QFile f(quiet);
+        CHECK(f.open(QIODevice::WriteOnly));
+        f.write(reinterpret_cast<const char *>(silence.data()), static_cast<qint64>(silence.size() * 2));
+    }
+    rfx::TrackReader emptyReader(quiet, spec);
+    CHECK(rfx::locateFields(emptyReader, 0, fs, rfx::VideoSystem::Ntsc, 2).empty());
+}
+
 int main()
 
 
@@ -491,8 +596,10 @@ int main()
     testReader();
     testCaptureReader();
     testSpeed();
+    testCaptureTimes();
     testCompressedHeader();
     testCompressedReader();
+    testRfSync();
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

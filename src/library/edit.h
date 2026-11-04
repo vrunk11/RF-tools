@@ -13,6 +13,8 @@
 
 #include "packer.h"
 
+#include "metadata.h"
+
 #include <QString>
 
 #include <cstddef>
@@ -20,6 +22,23 @@
 #include <vector>
 
 namespace rfx {
+
+// What is changed in a track on the way: for one of an archive its name, rate, note and sidecar files (nothing is coded
+// for that), and how it is written; for a new capture the rate, the note and the level.
+struct TrackEdit
+{
+    std::optional<std::string> name;
+    std::optional<double> rateHz;
+    // An empty note takes the note away.
+    std::optional<std::string> notes;
+    // The bits the samples carry, as the metadata says it.
+    std::optional<uint32_t> bits;
+    std::optional<std::vector<Sidecar>> sidecars;
+    // Code the track again even when it could be copied as it is.
+    bool recode = false;
+    // The level (1 to 4) it is coded at when it is coded; the options' when not given.
+    std::optional<int> level;
+};
 
 // One track of the archive to write: track `src` of the archive number `arch`
 // in the list given, or a capture file.
@@ -29,6 +48,7 @@ struct Pick
     size_t arch = 0;
     size_t src = 0;
     QString capture;
+    TrackEdit edit;
 
     static Pick old(size_t arch, size_t src)
     {

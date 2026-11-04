@@ -56,6 +56,17 @@ std::vector<Sidecar> findSidecars(const QString &capture);
 // The sample rate in Hz that a capture's .yaml gives, if one of the sidecars does.
 std::optional<double> sidecarRateHz(const std::vector<Sidecar> &sidecars);
 
+// When a capture was made, from its .yaml (the Domesday Duplicator writes "started", "finished" and "duration_seconds"):
+// the times are local, as written, in ISO 8601 without a zone ("2026-10-27T07:33:55").
+struct CaptureTimes
+{
+    std::string started;
+    std::string finished;
+    // 0 when the .yaml does not say.
+    double durationSeconds = 0.0;
+};
+std::optional<CaptureTimes> captureTimes(const std::vector<Sidecar> &sidecars);
+
 // The format of an input: `format` ("auto" guesses from the extension; "ldf" and
 // "flac" give s16, as they are decoded to it). Throws rfx::Error.
 SampleFormat inputFormat(const QString &path, const std::string &format);

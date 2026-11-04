@@ -77,6 +77,13 @@ struct SourceMeta
     std::optional<std::string> origin;
     // Sample rate in Hz; 0 when unknown.
     double rateHz = 0;
+    // A note about the capture, free text, for people (empty: none).
+    std::string notes;
+    // Bits the samples carry (the rest of each 16-bit sample is zero), as the person who made the file says it; 0 when not said.
+    uint32_t bits = 0;
+    // When the file the capture was read from was last changed, as UTC in ISO 8601
+    // ("2023-05-16T18:03:54Z"), when it was packed.
+    std::optional<std::string> fileTime;
 
     SampleFormat format() const;
     Preset preset() const;

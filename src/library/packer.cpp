@@ -9,6 +9,8 @@
  ******************************************************************************/
 
 #include "packer.h"
+#include "rfsync.h"
+#include "trackreader.h"
 
 #include "packer_internal.h"
 
@@ -244,9 +246,13 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
     prepared->workDir = decoded.workDir;
     std::vector<QString> inputs = decoded.paths;
     std::vector<QString> origs = given;
-    Preset preset;
-    if (!Preset::level(o.level, preset)) {
-        throw Error("level " + std::to_string(o.level) + " is not 1 to 4");
+    // The level of coding of each track: the one of the options, unless the track was given its own.
+    std::vector<Preset> presets(given.size());
+    for (size_t k = 0; k < given.size(); ++k) {
+        const int level = specs[k].level.value_or(o.level);
+        if (!Preset::level(level, presets[k])) {
+            throw Error("level " + std::to_string(level) + " is not 1 to 4");
+        }
     }
     std::vector<std::string> names;
     for (size_t k = 0; k < inputs.size(); ++k) {
@@ -297,29 +303,51 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
     }
     std::vector<std::vector<Field>> fields;
     if (inputs.size() > 1 && needTables) {
-        QString dir;
-        if (o.pass0Dir) {
-            dir = *o.pass0Dir;
-        } else {
-            dir = withExtension(output, QStringLiteral("pass0"));
-            std::fprintf(stderr, "locating the lines of every capture (ld-decode pass 0)\n");
-            if (std::any_of(fmts.begin(), fmts.end(), [&](SampleFormat f) { return f != fmts[0]; })) {
-                throw Error("the captures are not all in one format: the pass 0 of ld-decode takes one");
+        fields.resize(inputs.size());
+        if (o.pass0Dir || o.externalPass0) {
+            // Dumps already made, or made by ld-decode.
+            QString dir;
+            if (o.pass0Dir) {
+                dir = *o.pass0Dir;
+            } else {
+                dir = withExtension(output, QStringLiteral("pass0"));
+                std::fprintf(stderr, "locating the lines of every capture (ld-decode pass 0)\n");
+                if (std::any_of(fmts.begin(), fmts.end(), [&](SampleFormat f) { return f != fmts[0]; })) {
+                    throw Error("the captures are not all in one format: the pass 0 of ld-decode takes one");
+                }
+                std::optional<double> hz;
+                if (specs[0].carry && specs[0].carry->rateHz > 0) {
+                    hz = specs[0].carry->rateHz;
+                } else {
+                    hz = sidecarRateHz(findSidecars(given[0]));
+                }
+                runPass0(o.ldDecode, inputs, hz ? *hz / 1e6 : o.rateMhz, formatName(fmts[0]), dir);
             }
+            phase("pass 0 directory ready");
+            for (size_t i = 0; i < inputs.size(); ++i) {
+                fields[i] = parsePass0(QDir(dir).filePath(QStringLiteral("pass0_%1.txt").arg(static_cast<qulonglong>(i))));
+            }
+            phase("pass 0 parsed");
+        } else {
+            // The lines are located here, from the RF of each capture, with the same results as ld-decode's pass 0.
+            std::fprintf(stderr, "locating the lines of every capture (pass 0)\n");
             std::optional<double> hz;
             if (specs[0].carry && specs[0].carry->rateHz > 0) {
                 hz = specs[0].carry->rateHz;
             } else {
                 hz = sidecarRateHz(findSidecars(given[0]));
             }
-            runPass0(o.ldDecode, inputs, hz ? *hz / 1e6 : o.rateMhz, formatName(fmts[0]), dir);
+            const double fs = hz ? *hz : o.rateMhz * 1e6;
+            for (size_t i = 0; i < inputs.size(); ++i) {
+                CaptureSpec capture;
+                capture.format = fmts[i];
+                capture.rateHz = fs;
+                capture.bits = 16;
+                TrackReader reader(inputs[i], capture);
+                fields[i] = locateFields(reader, 0, fs, o.pal ? VideoSystem::Pal : VideoSystem::Ntsc, o.threads);
+            }
+            phase("pass 0 done");
         }
-        phase("pass 0 directory ready");
-        fields.resize(inputs.size());
-        for (size_t i = 0; i < inputs.size(); ++i) {
-            fields[i] = parsePass0(QDir(dir).filePath(QStringLiteral("pass0_%1.txt").arg(static_cast<qulonglong>(i))));
-        }
-        phase("pass 0 parsed");
     }
     phase("pass 0 read, order planned or not yet");
     std::vector<std::optional<double>> noise(inputs.size());
@@ -420,6 +448,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
         sm.sampleSha256 = st.sampleSha;
         sm.shift = st.shift;
         sm.mean = st.mean;
+        const Preset &preset = presets[k];
         sm.own = preset.own;
         sm.solo = preset.solo;
         sm.taps = preset.taps;
@@ -464,6 +493,27 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
         } else if (origs[k] != inputs[k]) {
             sm.origin = QFileInfo(origs[k]).fileName().toStdString();
         }
+        if (places[k].rateHz) {
+            sm.rateHz = *places[k].rateHz;
+        }
+        if (places[k].notes) {
+            sm.notes = *places[k].notes;
+        }
+        if (places[k].bits) {
+            sm.bits = *places[k].bits;
+        }
+        // The note and the date of the file go with the track; a capture that is new gets the date of its file.
+        if (carry) {
+            sm.notes = carry->notes;
+            sm.bits = carry->bits;
+            sm.fileTime = carry->fileTime;
+        } else if (places[k].like) {
+            sm.notes = places[k].like->notes;
+            sm.bits = places[k].like->bits;
+            sm.fileTime = places[k].like->fileTime;
+        } else {
+            sm.fileTime = QFileInfo(origs[k]).lastModified().toUTC().toString(Qt::ISODate).toStdString();
+        }
         meta.sources.push_back(std::move(sm));
     }
     for (const QString &p : inputs) {
@@ -503,6 +553,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
                 continue;
             }
             SourceMeta &sm = meta.sources[k];
+            const Preset &preset = presets[k];
             const size_t nr = sm.refs.size();
             sm.own = preset.plain;
             sm.ntop = 0;

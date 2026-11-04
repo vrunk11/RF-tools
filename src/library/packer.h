@@ -43,6 +43,11 @@ struct PackOptions
     // already made.
     std::optional<QString> pass0Dir;
     QString ldDecode = QStringLiteral("ld-decode");
+    // Run ld-decode (`ldDecode`) for pass 0, as the first versions did, instead of locating the lines in the process (rfsync.h), which gives
+    // the same positions.
+    bool externalPass0 = false;
+    // The captures are of a PAL disc (NTSC when not).
+    bool pal = false;
     // Capture sample rate in MHz, for pass 0 and for the metadata when the
     // capture has no .yaml.
     double rateMhz = 75.0;

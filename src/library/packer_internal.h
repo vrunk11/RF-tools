@@ -44,6 +44,12 @@ struct PackSpec
     // the references, weights and predictor parameters of `like`; no line is
     // located again.
     std::optional<SourceMeta> like;
+    // What a person asked for this track (see TrackEdit): the level it is coded at, the rate and the note it gets (not for a track
+    // carried over from an archive: its `carry` has them already).
+    std::optional<int> level;
+    std::optional<double> rateHz;
+    std::optional<std::string> notes;
+    std::optional<uint32_t> bits;
 
     // Its references and parameters are given, not worked out.
     bool settled() const { return frozen || like.has_value(); }

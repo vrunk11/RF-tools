@@ -215,6 +215,15 @@ std::string archiveYaml(const QString &path)
         t.set("noise", sm.noise ? Node::real(*sm.noise) : Node());
         t.set("origin", sm.origin ? Node::string(*sm.origin) : Node());
         t.set("rate_hz", Node::real(sm.rateHz));
+        if (!sm.notes.empty()) {
+            t.set("notes", Node::string(sm.notes));
+        }
+        if (sm.bits > 0) {
+            t.set("bits", Node::unsignedInteger(sm.bits));
+        }
+        if (sm.fileTime) {
+            t.set("file_time", Node::string(*sm.fileTime));
+        }
         t.set("track", Node::unsignedInteger(k));
         t.set("packed_bytes", Node::unsignedInteger(packed));
         t.set("bits_per_sample", Node::real(static_cast<double>(packed) * 8.0 / static_cast<double>(std::max<uint64_t>(sm.words, 1))));

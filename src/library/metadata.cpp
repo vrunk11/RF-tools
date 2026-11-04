@@ -148,6 +148,18 @@ SourceMeta parseSource(const QJsonObject &o)
     if (rate.isDouble()) {
         s.rateHz = rate.toDouble();
     }
+    const QJsonValue notes = field(o, "notes", false);
+    if (notes.isString()) {
+        s.notes = notes.toString().toStdString();
+    }
+    const QJsonValue bits = field(o, "bits", false);
+    if (bits.isDouble() && bits.toDouble() > 0) {
+        s.bits = static_cast<uint32_t>(bits.toDouble());
+    }
+    const QJsonValue fileTime = field(o, "file_time", false);
+    if (fileTime.isString()) {
+        s.fileTime = fileTime.toString().toStdString();
+    }
     return s;
 }
 
@@ -202,7 +214,18 @@ void putSource(std::string &out, const SourceMeta &s)
         out += '}';
     }
     out += "],\"origin\":" + (s.origin ? jsonQuote(*s.origin) : std::string("null"));
-    out += ",\"rate_hz\":" + formatReal(s.rateHz) + '}';
+    out += ",\"rate_hz\":" + formatReal(s.rateHz);
+    // Written only when there is one, so that an archive without them is the same bytes as before.
+    if (!s.notes.empty()) {
+        out += ",\"notes\":" + jsonQuote(s.notes);
+    }
+    if (s.bits > 0) {
+        out += ",\"bits\":" + std::to_string(s.bits);
+    }
+    if (s.fileTime) {
+        out += ",\"file_time\":" + jsonQuote(*s.fileTime);
+    }
+    out += '}';
 }
 
 } // namespace

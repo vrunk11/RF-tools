@@ -297,6 +297,26 @@ void testMetadata()
     b.size = 11;
     b.sidecars.push_back({"b.yaml", "ff", {'x', '\n', 0xC3, 0xA9}});
     m.sources = {a, b};
+    // The note and the date of the file go through the metadata, and are not written when they are not there (so that an
+    // archive without them is the same bytes as it always was).
+    {
+        rfx::ArchiveMeta plain = m;
+        for (rfx::SourceMeta &s : plain.sources) {
+            s.notes.clear();
+            s.fileTime.reset();
+        }
+        const std::vector<uint8_t> bare = rfx::serializeMeta(plain);
+        CHECK(std::string(bare.begin(), bare.end()).find("\"notes\"") == std::string::npos);
+        CHECK(std::string(bare.begin(), bare.end()).find("\"file_time\"") == std::string::npos);
+        rfx::ArchiveMeta noted = plain;
+        noted.sources[0].notes = "Side 1, \"first\" capture\nPioneer LD-1100 \xC3\xA9";
+        noted.sources[0].fileTime = "2023-05-16T18:03:54Z";
+        const std::vector<uint8_t> withNote = rfx::serializeMeta(noted);
+        const rfx::ArchiveMeta again = rfx::parseMeta(withNote.data(), withNote.size());
+        CHECK(again.sources[0].notes == noted.sources[0].notes);
+        CHECK(again.sources[0].fileTime && *again.sources[0].fileTime == "2023-05-16T18:03:54Z");
+        CHECK(again.sources.size() < 2 || (again.sources[1].notes.empty() && !again.sources[1].fileTime));
+    }
     const std::vector<uint8_t> json = rfx::serializeMeta(m);
     const rfx::ArchiveMeta back = rfx::parseMeta(json.data(), json.size());
     CHECK_EQ(back.sources.size(), 2u);

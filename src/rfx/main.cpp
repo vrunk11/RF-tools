@@ -13,11 +13,16 @@
 #include "edit.h"
 #include "error.h"
 #include "flacmode.h"
+#include "capture.h"
 #include "packer.h"
+#include "rfsync.h"
+#include "trackreader.h"
 
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QCoreApplication>
+#include <QDir>
+#include <QFile>
 #include <QStringList>
 
 #include <algorithm>
@@ -173,14 +178,15 @@ int runPack(const QStringList &args)
     const QCommandLineOption segment("segment", "Samples per independently coded segment.", "n", "262144");
     const QCommandLineOption noVerify("no-verify", "Skip the check that each segment decodes back to itself.");
     const QCommandLineOption pass0("pass0", "Pass 0 dumps already made (pass0_<i>.txt, in the order of the inputs).", "dir");
-    const QCommandLineOption ldDecode("ld-decode", "ld-decode, to locate the lines of the captures (pass 0).", "program", "ld-decode");
+    const QCommandLineOption ldDecode("ld-decode", "Use this ld-decode for the pass 0 (locating the lines of the captures) instead of doing it here, which gives the same positions.", "program", "ld-decode");
+    const QCommandLineOption palOption("pal", "The captures are of a PAL disc (NTSC when not given).");
     const QCommandLineOption rateMhz("rate-mhz", "Capture sample rate in MHz, for pass 0 and when a capture has no .yaml.", "MHz", "75");
     const QCommandLineOption format("format", "Capture format: auto (from the extension), s16, r16, s8, r8, lds, or flac / ldf (decoded with ffmpeg to raw 16-bit samples first).", "format", "auto");
     const QCommandLineOption device("device", "Where the predictor runs: cpu or gpu (OpenCL, the same bits).", "device", "cpu");
     const QCommandLineOption order("order", "Order of coding: auto puts the cleanest capture of each programme first, given keeps the command line order.", "order", "auto");
     const QCommandLineOption flac("flac", "Code the tracks as FLAC instead of with the predictor: the file is then an ordinary Matroska audio file (a FLAC track per capture) that audio programs open, several times larger; unpack gives the captures back all the same.");
     const QCommandLineOption threads("threads", "Threads coding segments (default: one per processor).", "n");
-    for (const QCommandLineOption *o : {&output, &level, &segment, &noVerify, &pass0, &ldDecode, &rateMhz, &format, &device, &order, &flac, &threads}) {
+    for (const QCommandLineOption *o : {&output, &level, &segment, &noVerify, &pass0, &ldDecode, &palOption, &rateMhz, &format, &device, &order, &flac, &threads}) {
         parser.addOption(*o);
     }
     parser.addPositionalArgument("captures", "The captures to pack.", "<capture>...");
@@ -213,6 +219,8 @@ int runPack(const QStringList &args)
         options.pass0Dir = parser.value(pass0);
     }
     options.ldDecode = parser.value(ldDecode);
+    options.externalPass0 = parser.isSet(ldDecode);
+    options.pal = parser.isSet(palOption);
     options.rateMhz = parser.value(rateMhz).toDouble(&ok);
     if (!ok || options.rateMhz <= 0) {
         return usageError(QStringLiteral("--rate-mhz wants a positive number, not '%1'").arg(parser.value(rateMhz)));
@@ -259,14 +267,15 @@ struct WorkOptions
     QCommandLineOption level{{"l", "level"}, "Predictor strength for tracks coded again or added: 1 fastest to 4 strongest.", "n", "3"};
     QCommandLineOption noVerify{"no-verify", "Skip the check that each coded segment decodes back to itself."};
     QCommandLineOption pass0{"pass0", "Pass 0 dumps already made (pass0_<i>.txt, in the order of the tracks written).", "dir"};
-    QCommandLineOption ldDecode{"ld-decode", "ld-decode, to locate the lines of the captures (pass 0).", "program", "ld-decode"};
+    QCommandLineOption ldDecode{"ld-decode", "Use this ld-decode for the pass 0 (locating the lines of the captures) instead of doing it here, which gives the same positions.", "program", "ld-decode"};
+    QCommandLineOption palOption{"pal", "The captures are of a PAL disc (NTSC when not given)."};
     QCommandLineOption rateMhz{"rate-mhz", "Capture sample rate in MHz, for pass 0.", "MHz", "75"};
     QCommandLineOption device{"device", "Where the predictor runs: cpu or gpu (OpenCL, the same bits).", "device", "cpu"};
     QCommandLineOption threads{"threads", "Threads coding segments (default: one per processor).", "n"};
 
     void addTo(QCommandLineParser &parser)
     {
-        for (const QCommandLineOption *o : {&level, &noVerify, &pass0, &ldDecode, &rateMhz, &device, &threads}) {
+        for (const QCommandLineOption *o : {&level, &noVerify, &pass0, &ldDecode, &palOption, &rateMhz, &device, &threads}) {
             parser.addOption(*o);
         }
     }
@@ -289,6 +298,8 @@ struct WorkOptions
             out.pass0Dir = parser.value(pass0);
         }
         out.ldDecode = parser.value(ldDecode);
+        out.externalPass0 = parser.isSet(ldDecode);
+        out.pal = parser.isSet(palOption);
         out.rateMhz = parser.value(rateMhz).toDouble(&ok);
         if (!ok || out.rateMhz <= 0) {
             return QStringLiteral("--rate-mhz wants a positive number, not '%1'").arg(parser.value(rateMhz));
@@ -405,6 +416,54 @@ bool positiveOption(const QCommandLineParser &parser, const QCommandLineOption &
     }
     out = static_cast<size_t>(v);
     return true;
+}
+
+// Development: pass 0 on captures, with no ld-decode: the dumps ld-decode writes with LD_DUMP_PASS0, to compare.
+int runPass0Command(const QStringList &args)
+{
+    QCommandLineParser parser;
+    parser.addHelpOption();
+    parser.setApplicationDescription("Development: locate the lines of the captures from their RF (the pass 0 of ld-decode) and write pass0_<i>.txt.");
+    const QCommandLineOption outdir({"o", "output"}, "Folder for the dumps.", "dir");
+    const QCommandLineOption rate("rate-mhz", "Sample rate in MHz (default: from the .yaml).", "MHz");
+    const QCommandLineOption format("format", "Capture format: s16, r16, s8, r8 or lds (from the extension when not given).", "format");
+    const QCommandLineOption pal("pal", "A PAL disc (default NTSC).");
+    const QCommandLineOption threads("threads", "Threads (default: one per processor).", "n");
+    for (const QCommandLineOption *o : {&outdir, &rate, &format, &pal, &threads}) {
+        parser.addOption(*o);
+    }
+    parser.addPositionalArgument("captures", "The captures.", "<capture>...");
+    parser.process(args);
+    if (parser.positionalArguments().isEmpty() || !parser.isSet(outdir)) {
+        return usageError("pass0 wants captures and --output");
+    }
+    QDir().mkpath(parser.value(outdir));
+    const unsigned threadCount = parser.isSet(threads) ? parser.value(threads).toUInt() : 0;
+    size_t i = 0;
+    for (const QString &path : parser.positionalArguments()) {
+        rfx::CaptureSpec spec;
+        const rfx::SampleFormat fmt = rfx::inputFormat(path, parser.isSet(format) ? parser.value(format).toStdString() : "auto");
+        spec.format = fmt;
+        std::optional<double> hz = rfx::sidecarRateHz(rfx::findSidecars(path));
+        if (parser.isSet(rate)) {
+            hz = parser.value(rate).toDouble() * 1e6;
+        }
+        if (!hz) {
+            return usageError("the rate of " + path + " is not known: give --rate-mhz");
+        }
+        spec.rateHz = *hz;
+        spec.bits = 16;
+        rfx::TrackReader reader(path, spec);
+        const std::vector<rfx::Field> fields = rfx::locateFields(reader, 0, *hz, parser.isSet(pal) ? rfx::VideoSystem::Pal : rfx::VideoSystem::Ntsc, threadCount);
+        const std::string text = rfx::formatPass0(fields);
+        QFile out(QDir(parser.value(outdir)).filePath(QStringLiteral("pass0_%1.txt").arg(i)));
+        if (!out.open(QIODevice::WriteOnly | QIODevice::Truncate) || out.write(text.data(), static_cast<qint64>(text.size())) != static_cast<qint64>(text.size())) {
+            throw rfx::Error("cannot write " + out.fileName().toStdString());
+        }
+        std::fprintf(stderr, "%s: %zu fields\n", path.toLocal8Bit().constData(), fields.size());
+        ++i;
+    }
+    return kExitOk;
 }
 
 // Development: noise, refsel, bench, gpu-check.
@@ -541,6 +600,7 @@ void printHelp()
         "  noise     How noisy each capture is (the cost of coding it alone, on the same frames)\n"
         "  refsel    Would other references have cost less for one capture?\n"
         "  bench     Single-thread speed of each stage, on a 16-bit capture\n"
+        "  pass0     Locate the lines of captures from their RF, as ld-decode's pass 0 does (writes its dumps)\n"
         "  gpu-check The predictor on the CPU and on the GPU, on a 16-bit capture\n"
         "\n"
         "Run 'rfx <command> --help' for the options of a command.\n",
@@ -586,6 +646,9 @@ int main(int argc, char *argv[])
         }
         if (command == QLatin1String("noise") || command == QLatin1String("refsel") || command == QLatin1String("bench") || command == QLatin1String("gpu-check")) {
             return runDiagnostic(command, rest);
+        }
+        if (command == QLatin1String("pass0")) {
+            return runPass0Command(rest);
         }
         if (command == QLatin1String("info")) {
             return runInfo(rest);
