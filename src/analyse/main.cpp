@@ -8,6 +8,7 @@
  * This file is part of RF-tools.
  ******************************************************************************/
 
+#include "capture.h"
 #include "capturedialog.h"
 #include "mainwindow.h"
 #include "trackreader.h"
@@ -95,7 +96,7 @@ int main(int argc, char *argv[])
         // A capture says nothing of its format, unless it is compressed: the header of that one gives its rate.
         bool anyCapture = false;
         for (const QString &path : args) {
-            anyCapture = anyCapture || (!isArchiveFile(path) && !isCompressedCapture(path));
+            anyCapture = anyCapture || (!isArchiveFile(path) && !isCompressedCapture(path) && !rfx::declaredCapture(rfx::findSidecars(path)));
         }
         bool opened = false;
         if (parser.isSet(rate) && std::any_of(args.begin(), args.end(), [](const QString &p) { return !isArchiveFile(p); })) {

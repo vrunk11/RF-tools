@@ -67,6 +67,27 @@ struct CaptureTimes
 };
 std::optional<CaptureTimes> captureTimes(const std::vector<Sidecar> &sidecars);
 
+// What the .yaml of the Domesday Duplicator says, as it is laid out: the lines at the left edge that have a value, in a section named
+// "file", then a section for each key that opens one ("capture", "signal", "requantization", "board", "device", "player", "disc"...),
+// the rows of each as they are written (key and value, the quotes taken off). Nothing for a sidecar that is not such a file.
+struct SidecarSection
+{
+    std::string name;
+    std::vector<std::pair<std::string, std::string>> rows;
+};
+std::vector<SidecarSection> sidecarSections(const std::vector<Sidecar> &sidecars);
+
+// What the capture declares of its samples, enough to open it without asking: the format ("signed 16-bit" or "FLAC") and the rate in Hz.
+// The bits the samples carry are found from the samples: its "bit_shift" is a shift of the converter's own bits, not their number.
+// Nothing when the format or the rate is not there.
+struct DeclaredCapture
+{
+    SampleFormat format = SampleFormat::S16;
+    bool compressed = false;
+    double rateHz = 0.0;
+};
+std::optional<DeclaredCapture> declaredCapture(const std::vector<Sidecar> &sidecars);
+
 // The format of an input: `format` ("auto" guesses from the extension; "ldf" and
 // "flac" give s16, as they are decoded to it). Throws rfx::Error.
 SampleFormat inputFormat(const QString &path, const std::string &format);

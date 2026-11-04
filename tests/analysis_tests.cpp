@@ -403,6 +403,48 @@ void testCaptureTimes()
     CHECK(!rfx::captureTimes({}).has_value());
 }
 
+// The .yaml of the Domesday Duplicator, laid out in sections, and what it declares of the samples.
+void testSidecarSections()
+{
+    const std::string yaml =
+        "# a comment\n\n\"schema_version\": 1\n\"application_version\": \"10fc5c35\"\n\n\"capture\":\n  \"file\": \"a.ddd.s16\"\n  \"format\": \"signed 16-bit\"\n"
+        "  \"sample_rate_hz\": 75000000\n  \"bit_shift\": 0\n  \"completed\": true\n\n\"signal\":\n  \"rms\": 85.49\n\n\"naming\": {}\n\n\"disc\": {}\n";
+    rfx::Sidecar sc;
+    sc.name = "a.ddd.yaml";
+    sc.data.assign(yaml.begin(), yaml.end());
+    const std::vector<rfx::SidecarSection> sections = rfx::sidecarSections({sc});
+    CHECK(sections.size() == 5);
+    if (sections.size() == 5) {
+        CHECK(sections[0].name == "file" && sections[0].rows.size() == 2 && sections[0].rows[1] == std::make_pair(std::string("application_version"), std::string("10fc5c35")));
+        CHECK(sections[1].name == "capture" && sections[1].rows.size() == 5);
+        CHECK(sections[1].rows[1] == std::make_pair(std::string("format"), std::string("signed 16-bit")));
+        CHECK(sections[2].name == "signal" && sections[2].rows.size() == 1 && sections[2].rows[0].second == "85.49");
+        CHECK(sections[3].name == "naming" && sections[3].rows.empty());
+    }
+    const std::optional<rfx::DeclaredCapture> declared = rfx::declaredCapture({sc});
+    CHECK(declared.has_value());
+    if (declared) {
+        CHECK(declared->format == rfx::SampleFormat::S16);
+        CHECK(!declared->compressed);
+        CHECK(declared->rateHz == 75e6);
+    }
+    // A FLAC capture says so; a file with no format, or no rate, declares nothing; a file that is not that yaml has no sections.
+    std::string flac = yaml;
+    flac.replace(flac.find("signed 16-bit"), 13, "FLAC");
+    rfx::Sidecar f;
+    f.data.assign(flac.begin(), flac.end());
+    CHECK(rfx::declaredCapture({f}) && rfx::declaredCapture({f})->compressed);
+    std::string norate = yaml;
+    norate.replace(norate.find("\"sample_rate_hz\""), 16, "\"sample_rate_x\"");
+    rfx::Sidecar n;
+    n.data.assign(norate.begin(), norate.end());
+    CHECK(!rfx::declaredCapture({n}).has_value());
+    rfx::Sidecar other;
+    other.data = {'n', 'o'};
+    CHECK(rfx::sidecarSections({other}).empty());
+    CHECK(!rfx::declaredCapture({}).has_value());
+}
+
 // The header of a compressed capture says its rate (in kHz, as ld-decode writes it) and its sample size.
 void testCompressedHeader()
 {
@@ -597,6 +639,7 @@ int main()
     testCaptureReader();
     testSpeed();
     testCaptureTimes();
+    testSidecarSections();
     testCompressedHeader();
     testCompressedReader();
     testRfSync();

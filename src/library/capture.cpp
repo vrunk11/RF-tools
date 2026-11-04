@@ -26,6 +26,8 @@
 #include <algorithm>
 #include <cctype>
 #include <cmath>
+#include <cstdlib>
+#include <utility>
 #include <cstdio>
 
 namespace rfx {
@@ -239,6 +241,112 @@ std::optional<CaptureTimes> captureTimes(const std::vector<Sidecar> &sidecars)
         return times;
     }
     return std::nullopt;
+}
+
+namespace {
+
+std::string unquote(std::string s)
+{
+    while (!s.empty() && (s.back() == ' ' || s.back() == '\t' || s.back() == '\r')) {
+        s.pop_back();
+    }
+    size_t a = 0;
+    while (a < s.size() && (s[a] == ' ' || s[a] == '\t')) {
+        ++a;
+    }
+    s = s.substr(a);
+    if (s.size() >= 2 && s.front() == '"' && s.back() == '"') {
+        s = s.substr(1, s.size() - 2);
+    }
+    return s;
+}
+
+} // namespace
+
+std::vector<SidecarSection> sidecarSections(const std::vector<Sidecar> &sidecars)
+{
+    std::vector<SidecarSection> out;
+    for (const Sidecar &sc : sidecars) {
+        const std::string text(reinterpret_cast<const char *>(sc.data.data()), sc.data.size());
+        if (text.find("\"capture\"") == std::string::npos) {
+            continue;
+        }
+        // The lines of the file: "key": value at the left edge, which opens a section when the value is nothing (its keys
+        // follow, indented) and is a line of the section named "file" when it is a value; "key": {} is a section with nothing in it.
+        SidecarSection top;
+        top.name = "file";
+        SidecarSection *current = &top;
+        std::vector<SidecarSection> sections;
+        size_t start = 0;
+        while (start <= text.size()) {
+            size_t end = text.find('\n', start);
+            if (end == std::string::npos) {
+                end = text.size();
+            }
+            const std::string line = text.substr(start, end - start);
+            start = end + 1;
+            size_t first = line.find_first_not_of(" \t");
+            if (first == std::string::npos || line[first] == '#') {
+                continue;
+            }
+            const size_t colon = line.find("\":", first);
+            if (line[first] != '"' || colon == std::string::npos) {
+                continue;
+            }
+            const std::string key = line.substr(first + 1, colon - first - 1);
+            const std::string value = unquote(line.substr(colon + 2));
+            if (first == 0) {
+                if (value.empty()) {
+                    sections.push_back(SidecarSection{key, {}});
+                    current = &sections.back();
+                } else if (value == "{}") {
+                    sections.push_back(SidecarSection{key, {}});
+                    current = &top;
+                } else {
+                    top.rows.emplace_back(key, value);
+                    current = &top;
+                }
+            } else if (current != &top) {
+                current->rows.emplace_back(key, value);
+            }
+        }
+        out.push_back(std::move(top));
+        for (SidecarSection &s : sections) {
+            out.push_back(std::move(s));
+        }
+        return out;
+    }
+    return out;
+}
+
+std::optional<DeclaredCapture> declaredCapture(const std::vector<Sidecar> &sidecars)
+{
+    DeclaredCapture d;
+    bool formatKnown = false;
+    for (const SidecarSection &s : sidecarSections(sidecars)) {
+        if (s.name != "capture") {
+            continue;
+        }
+        for (const auto &row : s.rows) {
+            if (row.first == "format") {
+                // In the words the capture application uses.
+                if (row.second == "signed 16-bit") {
+                    d.format = SampleFormat::S16;
+                    formatKnown = true;
+                } else if (row.second == "FLAC") {
+                    d.format = SampleFormat::S16;
+                    d.compressed = true;
+                    formatKnown = true;
+                }
+            } else if (row.first == "sample_rate_hz") {
+                d.rateHz = std::atof(row.second.c_str());
+            }
+        }
+    }
+    if (!formatKnown || !(d.rateHz > 0.0)) {
+        return std::nullopt;
+    }
+    return d;
 }
 
 SampleFormat inputFormat(const QString &path, const std::string &format)

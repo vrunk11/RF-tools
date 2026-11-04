@@ -148,6 +148,7 @@ private slots:
     void compactModeAndSpectrumControls();
     void decodesCompressedCaptures();
     void speedFromTheRf();
+    void showsTheSidecarOfACapture();
 
 private:
     QTemporaryDir m_dir;
@@ -1010,6 +1011,34 @@ void AnalyseGuiTests::compactModeAndSpectrumControls()
     QVERIFY(stats->isVisible() && list->isVisible());
 }
 
+// The .yaml beside a capture: its parts are sections of the metadata, and the file is opened without asking.
+void AnalyseGuiTests::showsTheSidecarOfACapture()
+{
+    const QString raw = m_dir.filePath("declared.ddd.s16");
+    write(raw, capture(0, 5));
+    write(m_dir.filePath("declared.ddd.yaml"),
+          "\"schema_version\": 1\n\"application_version\": \"10fc5c35\"\n\n\"capture\":\n  \"file\": \"declared.ddd.s16\"\n  \"format\": \"signed 16-bit\"\n"
+          "  \"sample_rate_hz\": 40000000\n  \"input_range\": \"2Vpp\"\n  \"started\": \"2026-10-28T15:44:23\"\n\n\"signal\":\n  \"rms\": 85.49\n\n\"player\": {}\n");
+    rfx::CaptureSpec spec;
+    spec.format = rfx::SampleFormat::S16;
+    spec.rateHz = 40e6;
+    MainWindow w;
+    w.resize(1100, 800);
+    QVERIFY(w.openCapture(raw, spec));
+    w.show();
+    auto *session = w.findChild<Session *>();
+    QVERIFY(settle(*session));
+    auto *panel = w.findChild<MetadataPanel *>("metadataPanel");
+    QStringList names;
+    for (int i = 0; i < panel->topLevelItemCount(); ++i) {
+        names << panel->topLevelItem(i)->text(0);
+    }
+    QCOMPARE(names, (QStringList{"File", "Capture", "Sidecar", "Capture settings", "Signal", "Samples"}));
+    // The sections of the yaml hold its rows, without the ones the Capture section already says.
+    QCOMPARE(panel->topLevelItem(3)->childCount(), 3);
+    QCOMPARE(panel->topLevelItem(4)->childCount(), 1);
+}
+
 // The speed measured from the RF: a made-up NTSC capture whose lines are 0.1% shorter than the nominal ones (a disc going 1000 ppm
 // too fast) has that speed with the box ticked, with or without a reference, and none without it.
 void AnalyseGuiTests::speedFromTheRf()
@@ -1075,11 +1104,6 @@ void AnalyseGuiTests::speedFromTheRf()
     const double ppm = session->speedAt(0, 2000000);
     QVERIFY2(std::fabs(ppm - 1000.0) < 25.0, qPrintable(QString::number(ppm)));
     QVERIFY(!session->speedIsZero(0));
-    if (qEnvironmentVariableIsSet("RF_TEST_PICTURE")) {
-        DeviationView view(session);
-        view.resize(800, 220);
-        view.grab().save(qEnvironmentVariable("RF_TEST_PICTURE"));
-    }
     session->setRfSpeed(false);
     QVERIFY(!session->hasSpeed(0));
     session->close();

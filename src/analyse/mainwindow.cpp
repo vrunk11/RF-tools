@@ -1275,6 +1275,18 @@ bool MainWindow::sourcesFor(const QStringList &paths, std::vector<Session::Sourc
         if (isArchiveFile(path)) {
             continue;
         }
+        // The .yaml beside a capture that declares its format and its rate says all there is to ask.
+        if (const std::optional<rfx::DeclaredCapture> declared = rfx::declaredCapture(rfx::findSidecars(path))) {
+            if (declared->compressed == isCompressedCapture(path)) {
+                rfx::CaptureSpec spec;
+                spec.format = declared->format;
+                spec.compressed = declared->compressed;
+                spec.rateHz = declared->rateHz;
+                spec.name = QFileInfo(path).fileName().toStdString();
+                known[static_cast<size_t>(i)] = spec;
+                continue;
+            }
+        }
         if (isCompressedCapture(path)) {
             double rate = rfx::sidecarRateHz(rfx::findSidecars(path)).value_or(0.0);
             if (rate <= 0.0) {

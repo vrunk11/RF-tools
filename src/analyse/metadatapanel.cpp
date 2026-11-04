@@ -209,6 +209,26 @@ void MetadataPanel::rebuild()
           {tr("Lag at the bar"), lag},
           {tr("Origin"), sm.origin ? QString::fromStdString(*sm.origin) : QStringLiteral("-")}}}};
 
+    // What the .yaml beside the capture (or kept in the archive) says besides: one section for each of its parts that has something in it.
+    {
+        int at = 2;
+        for (const rfx::SidecarSection &s : rfx::sidecarSections(sm.sidecars)) {
+            Section section;
+            section.name = s.name == "file" ? tr("Sidecar") : s.name == "capture" ? tr("Capture settings") : tr("%1").arg(QString::fromStdString(s.name).replace(QLatin1Char('_'), QLatin1Char(' ')).replace(0, 1, QString::fromStdString(s.name).left(1).toUpper()));
+            for (const auto &row : s.rows) {
+                if (row.first == "started" || row.first == "finished" || row.first == "duration_seconds" || row.first == "file") {
+                    continue;
+                }
+                QString key = QString::fromStdString(row.first).replace(QLatin1Char('_'), QLatin1Char(' '));
+                key.replace(0, 1, key.left(1).toUpper());
+                section.rows.push_back({key, QString::fromStdString(row.second)});
+            }
+            if (!section.rows.isEmpty()) {
+                sections.insert(at++, section);
+            }
+        }
+    }
+
     // A raw capture is stored as it is, hashed by nobody, and coded by nothing: those
     // fields and the section of the coding are the archive's.
     if (!m_session->inArchive(k)) {
