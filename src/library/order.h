@@ -33,12 +33,21 @@ struct NoiseScore
     double bits = 0;
     // RMS of the samples around their mean (gain and amplitude).
     double rms = 0;
+    // The cheapest and the dearest window, and how many windows were measured.
+    double lowest = 0;
+    double highest = 0;
+    size_t windows = 0;
 
     // The cost normalised by the amplitude: noise against signal, smaller is
     // cleaner. (The raw cost is wrong: a capture with a stronger signal costs more
     // bits and is the better reference.)
     double cost() const;
 };
+
+// The noise of each capture, measured on `windows` windows of `windowLength` samples
+// at frames that all the captures have. Throws rfx::Error when they cannot be compared.
+std::vector<NoiseScore> measureNoise(const std::vector<QString> &inputs, const std::vector<SampleFormat> &fmts,
+                                     const std::vector<std::vector<Field>> &fields, size_t windows, size_t windowLength, unsigned threads);
 
 // The order to pack `inputs` in: captures that share frames form a group; groups
 // keep the place of their first capture and each is sorted from the cleanest

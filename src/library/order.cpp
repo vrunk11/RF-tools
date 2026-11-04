@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstdio>
+#include <limits>
 #include <memory>
 #include <string>
 #include <unordered_map>
@@ -75,7 +76,7 @@ int trailingZeros(uint32_t v)
 // 20% and 80% of the first capture's frames). Throws rfx::Error if they cannot be
 // compared.
 std::vector<NoiseScore> scores(const std::vector<QString> &inputs, const std::vector<SampleFormat> &fmts,
-                               const std::vector<const std::vector<Field> *> &fields, unsigned threads)
+                               const std::vector<const std::vector<Field> *> &fields, size_t nwin, size_t win, unsigned threads)
 {
     std::vector<std::unordered_map<std::string, size_t>> maps;
     for (const auto *f : fields) {
@@ -90,14 +91,14 @@ std::vector<NoiseScore> scores(const std::vector<QString> &inputs, const std::ve
         }
     }
     std::stable_sort(common.begin(), common.end(), [](const auto &a, const auto &b) { return a.first < b.first; });
-    if (common.size() < kWindows * 4) {
+    if (common.size() < nwin * 4) {
         throw Error("the captures share only " + std::to_string(common.size()) + " frames: not enough to compare their noise");
     }
     const size_t lo = common.size() * kFirstFifth / 5;
     const size_t hi = common.size() * kLastFifth / 5;
     std::vector<std::string> picks;
-    for (size_t w = 0; w < kWindows; ++w) {
-        picks.push_back(common[lo + (hi - lo) * w / kWindows].second);
+    for (size_t w = 0; w < nwin; ++w) {
+        picks.push_back(common[lo + (hi - lo) * w / nwin].second);
     }
     Preset pre;
     Preset::level(kNoiseLevel, pre);
@@ -111,20 +112,20 @@ std::vector<NoiseScore> scores(const std::vector<QString> &inputs, const std::ve
         double bits = 0;
         double rms = 0;
     };
-    std::vector<Measure> measured(inputs.size() * kWindows);
+    std::vector<Measure> measured(inputs.size() * nwin);
     parallelFor(measured.size(), threads, [&](size_t job) {
-        const size_t i = job / kWindows;
-        const size_t w = job % kWindows;
+        const size_t i = job / nwin;
+        const size_t w = job % nwin;
         const uint64_t words = formatSamples(fmts[i], files[i]->size());
         const Field &f = (*fields[i])[maps[i][picks[w]]];
         if (f.lines.empty()) {
             return;
         }
         const int64_t start = static_cast<int64_t>(f.lines.front());
-        if (start < 0 || static_cast<uint64_t>(start) + kWindowLength > words) {
+        if (start < 0 || static_cast<uint64_t>(start) + win > words) {
             return;
         }
-        std::vector<int32_t> probe(kWindowLength);
+        std::vector<int32_t> probe(win);
         loadSamples(fmts[i], *files[i], words, start, probe.data(), probe.size());
         uint32_t orAll = 0;
         for (const int32_t v : probe) {
@@ -137,34 +138,44 @@ std::vector<NoiseScore> scores(const std::vector<QString> &inputs, const std::ve
             y[k] = probe[k] >> shift;
             sum += y[k];
         }
-        const int32_t mean = static_cast<int32_t>(std::llround(static_cast<double>(sum) / static_cast<double>(kWindowLength)));
+        const int32_t mean = static_cast<int32_t>(std::llround(static_cast<double>(sum) / static_cast<double>(win)));
         double squares = 0;
         for (int32_t &v : y) {
             v -= mean;
             squares += static_cast<double>(v) * static_cast<double>(v);
         }
-        const double rms = std::sqrt(squares / static_cast<double>(kWindowLength));
+        const double rms = std::sqrt(squares / static_cast<double>(win));
         const std::vector<int32_t> residuals = predictionErrors(y, pre, false, nullptr, 0);
-        const double bits = static_cast<double>(encodeResiduals(residuals).size()) * 8.0 / static_cast<double>(kWindowLength);
+        const double bits = static_cast<double>(encodeResiduals(residuals).size()) * 8.0 / static_cast<double>(win);
         measured[job] = {true, bits, rms};
     });
     std::vector<NoiseScore> out;
     for (size_t i = 0; i < inputs.size(); ++i) {
         double bits = 0;
         double rms = 0;
+        double lowest = std::numeric_limits<double>::max();
+        double highest = std::numeric_limits<double>::lowest();
         size_t n = 0;
-        for (size_t w = 0; w < kWindows; ++w) {
-            const Measure &m = measured[i * kWindows + w];
+        for (size_t w = 0; w < nwin; ++w) {
+            const Measure &m = measured[i * nwin + w];
             if (m.ok) {
                 bits += m.bits;
                 rms += m.rms;
+                lowest = std::min(lowest, m.bits);
+                highest = std::max(highest, m.bits);
                 ++n;
             }
         }
         if (n == 0) {
             throw Error(inputs[i].toStdString() + ": no window inside the file");
         }
-        out.push_back({bits / static_cast<double>(n), rms / static_cast<double>(n)});
+        NoiseScore score;
+        score.bits = bits / static_cast<double>(n);
+        score.rms = rms / static_cast<double>(n);
+        score.lowest = lowest;
+        score.highest = highest;
+        score.windows = n;
+        out.push_back(score);
     }
     return out;
 }
@@ -179,6 +190,16 @@ size_t findRoot(std::vector<size_t> &g, size_t i)
 }
 
 } // namespace
+std::vector<NoiseScore> measureNoise(const std::vector<QString> &inputs, const std::vector<SampleFormat> &fmts,
+                                     const std::vector<std::vector<Field>> &fields, size_t windows, size_t windowLength, unsigned threads)
+{
+    std::vector<const std::vector<Field> *> pointers;
+    for (const auto &f : fields) {
+        pointers.push_back(&f);
+    }
+    return scores(inputs, fmts, pointers, windows, windowLength, threads);
+}
+
 
 double NoiseScore::cost() const
 {
@@ -237,7 +258,7 @@ Plan planOrder(const std::vector<QString> &inputs, const std::vector<SampleForma
                 subFmts.push_back(fmts[i]);
             }
             try {
-                const std::vector<NoiseScore> sc = scores(subInputs, subFmts, subFields, threads);
+                const std::vector<NoiseScore> sc = scores(subInputs, subFmts, subFields, kWindows, kWindowLength, threads);
                 std::vector<std::pair<size_t, double>> ranked;
                 for (size_t k = 0; k < m.size(); ++k) {
                     ranked.emplace_back(m[k], sc[k].cost());

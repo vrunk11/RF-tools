@@ -53,10 +53,11 @@ such a file holds, and converting it. Decoding stays in
 
 The tools are written in **C++17 with Qt 6**, in the style of
 [ld-decode-tools](https://github.com/vrunk11/ld-decode-tools); this repository holds only that
-C++ code and the specifications. The **reference implementation is the Rust `rfx` crate in
-[ld-decode-rust](https://github.com/vrunk11/ld-decode-rust)** (`crates/rfx`, kept there as
-legacy, with the reader that ld-decode uses): it defines the format and every bit of the
-predictor, and a C++ tool is correct when it gives that crate's output.
+C++ code and the specifications. The **reference implementation is the Rust `rfx` crate of
+[ld-decode-rust](https://github.com/vrunk11/ld-decode-rust)**: it defines the format and every
+bit of the predictor, and a C++ tool is correct when it gives that crate's output. Its writer
+(and the experiments) is kept on the branch `legacy/rfx-packer` of that repository; on
+`vrunk11_main` the crate (`crates/rfx`) is the reader that ld-decode uses.
 
 - **Type:** C++17, Qt 6
 - **Build system:** CMake 3.16+, Ninja
@@ -66,7 +67,7 @@ predictor, and a C++ tool is correct when it gives that crate's output.
 
 | Directory | Binaries | Purpose |
 | --- | --- | --- |
-| `src/rfx/` | `rfx` | The command line tool: `pack`, `unpack`, `info`, `merge`, `extract`, `remove`, `add` (ported from the Rust `rfx`; the FLAC variant goes through ffmpeg) |
+| `src/rfx/` | `rfx` | The command line tool: `pack`, `unpack`, `info`, `merge`, `extract`, `remove`, `add`, and the diagnostics `noise`, `refsel`, `bench`, `gpu-check` (ported from the Rust `rfx`, except its `lab` experiments; the FLAC variant goes through ffmpeg) |
 | `src/library/` | (static library `rfx-library`) | The format: container, metadata, predictor (CPU, and OpenCL in `kernel.cl`, loaded at run time), range coder, lag tables, reference windows, packing, editing, unpacking, conversion. Shared by every tool |
 | `tests/` | `rfx-library-tests`, `rfx-roundtrip-tests` | The unit tests (CTest label `unit`) |
 
@@ -175,7 +176,7 @@ Source of truth: [TESTING.md](TESTING.md). In short:
   the hash of the input (`sha256` in the metadata).
 - A change to the predictor, the coder or the container needs a test that decodes a fixed
   stream to fixed samples, so that a regression of the bits is caught on any machine.
-- The reference is the Rust `rfx` crate of ld-decode-rust (`cargo test --release -p rfx` there): a
+- The reference is the Rust `rfx` crate of ld-decode-rust: its writer is on the branch `legacy/rfx-packer` (build it there, `cargo build --release -p rfx`), its reader on `vrunk11_main` (`cargo test --release -p rfx`). A
   C++ tool is checked against its output on the same captures, bit for bit.
 - Do not loosen an expected value to make a test pass without explaining why the new value is
   correct.

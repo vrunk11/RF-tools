@@ -7,18 +7,22 @@ these files directly. The sister project for what comes after the decoder is
 [ld-decode-tools](https://github.com/vrunk11/ld-decode-tools).
 
 > [!NOTE]
-> The tools are written in C++17 with Qt 6, like ld-decode-tools. The command line tool `rfx` is
-> being ported from the Rust `rfx` crate of
-> [ld-decode-rust](https://github.com/vrunk11/ld-decode-rust) (`crates/rfx`, kept there as
-> legacy, with the reader of ld-decode). That crate is the reference: it defines the format, and
-> the C++ tools are correct when they give its output.
+> The tools are written in C++17 with Qt 6, like ld-decode-tools. The command line tool `rfx` was
+> ported from the Rust `rfx` crate of
+> [ld-decode-rust](https://github.com/vrunk11/ld-decode-rust). That crate is the reference: it
+> defines the format, and the C++ tools are correct when they give its output. Its writer (pack,
+> unpack, merge, extract, remove, add, the GPU packing pipeline and the experiments) is kept on the
+> branch `legacy/rfx-packer`; on `vrunk11_main` only its reader remains (`crates/rfx`), the one
+> ld-decode uses.
 >
-> **Ported so far** (`pack`, `unpack`, `info`, `merge`, `extract`, `remove`, `add`, the FLAC
-> variant through ffmpeg, and the OpenCL predictor, `--device gpu`): what they write is the same
-> file, byte for byte, as the Rust tool writes from the same captures (on the CPU or on the GPU),
-> and what they read is checked by the SHA-256 of the captures. **Not ported**: the development
-> commands of the Rust tool (`bench`, `noise`, `refsel`, `lab`, `gpu-check`), and the native FLAC
-> reader of ld-decode. There is no graphical application yet.
+> **Ported** (`pack`, `unpack`, `info`, `merge`, `extract`, `remove`, `add`, the FLAC variant
+> through ffmpeg, the OpenCL predictor with `--device gpu`, and the diagnostics `noise`, `refsel`,
+> `bench` and `gpu-check`): what they write is the same file, byte for byte, as the Rust tool writes
+> from the same captures (on the CPU or on the GPU), what `noise` and `refsel` print is the same
+> text, and what they read is checked by the SHA-256 of the captures. **Not ported**: the `lab`
+> experiments of the Rust tool, research on possible changes of the residual model, the lag tables
+> and the predictor, which are not part of the format; they stay on `legacy/rfx-packer`. There is
+> no graphical application yet.
 
 ## What the tools do
 
@@ -59,7 +63,7 @@ Ready-made packages for Linux (tarball), macOS (tarball) and Windows (ZIP) are b
 
 - **Formats**: input `s16`, `r16`, `s8`, `r8` and the packed 10-bit `lds` of the Domesday Duplicator, or `flac` / `ldf` decoded with ffmpeg to raw samples first
 - **Lossless**: every sample is kept; what is unpacked is the file that was packed, byte for byte (compressed inputs, which are decoded when packed, come back as raw samples, or in the format asked for)
-- **Same bits everywhere**: the predictor's arithmetic is fixed by the specification, so that the CPU, an OpenCL GPU and the other implementations all decode the same file. The Rust crate packs and unpacks at 30-110 million samples a second on a GPU
+- **Same bits everywhere**: the predictor's arithmetic is fixed by the specification, so that the CPU, an OpenCL GPU and the other implementations all decode the same file. On one machine (an RTX 5080 laptop), packing four captures of 6.9 GB takes about 38 s on the GPU, and unpacking 600 MB of captures about 3.4 s
 
 ## Documentation
 

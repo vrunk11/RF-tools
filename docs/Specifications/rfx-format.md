@@ -437,6 +437,9 @@ the CPU's bits) unless `--no-verify` is given.
 
 ## 11. Reference implementation
 
+The Rust files below are those of the branch `legacy/rfx-packer` of ld-decode-rust, which has the writer
+and the reader; `vrunk11_main` has the reader only (`pack.rs` there is `archive.rs`, without the packing).
+
 | part | file |
 |------|------|
 | container | `crates/rfx/src/ebml.rs` |

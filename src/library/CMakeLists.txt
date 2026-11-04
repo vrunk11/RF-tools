@@ -3,6 +3,7 @@ add_library(rfx-library STATIC
     archive.cpp
     capture.cpp
     convert.cpp
+    diagnostics.cpp
     edit.cpp
     ffmpeg.cpp
     flacmode.cpp

@@ -9,6 +9,7 @@
  ******************************************************************************/
 
 #include "archive.h"
+#include "diagnostics.h"
 #include "edit.h"
 #include "error.h"
 #include "flacmode.h"
@@ -393,6 +394,133 @@ int runEdit(const QString &command, const QStringList &args)
     return kExitOk;
 }
 
+// A positive number option; false (with the message) if it is not one.
+bool positiveOption(const QCommandLineParser &parser, const QCommandLineOption &option, size_t &out, QString &error)
+{
+    bool ok = false;
+    const qulonglong v = parser.value(option).toULongLong(&ok);
+    if (!ok || v == 0) {
+        error = QStringLiteral("--%1 wants a positive number, not '%2'").arg(option.names().last(), parser.value(option));
+        return false;
+    }
+    out = static_cast<size_t>(v);
+    return true;
+}
+
+// Development: noise, refsel, bench, gpu-check.
+int runDiagnostic(const QString &command, const QStringList &args)
+{
+    QCommandLineParser parser;
+    parser.addHelpOption();
+    const QCommandLineOption pass0("pass0", "Pass 0 dumps (pass0_<i>.txt, in the order of the captures).", "dir");
+    const QCommandLineOption windows("windows", "Windows measured on each capture.", "n", "8");
+    const QCommandLineOption window("window", "Samples in a window.", "n", "262144");
+    const QCommandLineOption target("target", "Coding place of the capture (0 is the primary).", "n");
+    const QCommandLineOption level({"l", "level"}, "Predictor strength: 1 fastest to 4 strongest.", "n", "3");
+    const QCommandLineOption segments("segments", "Segments looked at.", "n");
+    const QCommandLineOption segment("segment", "Samples in a segment.", "n", "262144");
+    const QCommandLineOption withRef("with-ref", "Predict from a (synthetic) reference window too.");
+    const QCommandLineOption threads("threads", "Threads (default: one per processor).", "n");
+    if (command == QLatin1String("noise")) {
+        parser.setApplicationDescription("Development: how noisy each capture is (the cost of coding it alone, on the same frames).");
+        parser.addOption(pass0);
+        parser.addOption(windows);
+        parser.addOption(window);
+        parser.addOption(threads);
+        parser.addPositionalArgument("captures", "The captures, in the order of the dumps.", "<capture>...");
+    } else if (command == QLatin1String("refsel")) {
+        parser.setApplicationDescription("Development: would other references have cost less for one capture?");
+        parser.addOption(target);
+        parser.addOption(pass0);
+        parser.addOption(segments);
+        parser.addOption(threads);
+        parser.addPositionalArgument("captures", "The captures, in the order of the dumps.", "<capture>...");
+    } else if (command == QLatin1String("bench")) {
+        parser.setApplicationDescription("Development: single-thread speed of each stage, on a 16-bit capture.");
+        parser.addOption(level);
+        parser.addOption(segments);
+        parser.addOption(segment);
+        parser.addPositionalArgument("capture", "A 16-bit capture.");
+    } else {
+        parser.setApplicationDescription("Development: the predictor on the CPU and on the GPU, on a 16-bit capture.");
+        parser.addOption(withRef);
+        parser.addOption(level);
+        parser.addOption(segments);
+        parser.addOption(segment);
+        parser.addPositionalArgument("capture", "A 16-bit capture.");
+    }
+    parser.process(args);
+    const QStringList positional = parser.positionalArguments();
+    QString error;
+    unsigned threadCount = 0;
+    if (parser.isSet(threads)) {
+        bool ok = false;
+        threadCount = parser.value(threads).toUInt(&ok);
+        if (!ok || threadCount == 0) {
+            return usageError(QStringLiteral("--threads wants a positive number, not '%1'").arg(parser.value(threads)));
+        }
+    }
+    int levelValue = 3;
+    if (command == QLatin1String("bench") || command == QLatin1String("gpu-check")) {
+        bool ok = false;
+        levelValue = parser.value(level).toInt(&ok);
+        if (!ok || levelValue < 1 || levelValue > 4) {
+            return usageError(QStringLiteral("--level is 1 to 4, not '%1'").arg(parser.value(level)));
+        }
+        if (positional.size() != 1) {
+            return usageError(command + " wants one capture");
+        }
+    } else {
+        if (positional.isEmpty()) {
+            return usageError(command + " wants captures");
+        }
+        if (!parser.isSet(pass0)) {
+            return usageError(command + " wants --pass0");
+        }
+    }
+    size_t count = 0;
+    size_t length = 0;
+    std::vector<QString> inputs(positional.begin(), positional.end());
+    if (command == QLatin1String("noise")) {
+        if (!positiveOption(parser, windows, count, error) || !positiveOption(parser, window, length, error)) {
+            return usageError(error);
+        }
+        rfx::printNoise(inputs, parser.value(pass0), count, length, threadCount);
+    } else if (command == QLatin1String("refsel")) {
+        if (!parser.isSet(target)) {
+            return usageError("refsel wants --target");
+        }
+        bool ok = false;
+        const qulonglong place = parser.value(target).toULongLong(&ok);
+        if (!ok) {
+            return usageError(QStringLiteral("--target wants a place, not '%1'").arg(parser.value(target)));
+        }
+        count = 12;
+        if (parser.isSet(segments) && !positiveOption(parser, segments, count, error)) {
+            return usageError(error);
+        }
+        rfx::PackOptions options;
+        options.pass0Dir = parser.value(pass0);
+        options.verify = false;
+        options.threads = threadCount;
+        rfx::printReferenceChoice(inputs, options, static_cast<size_t>(place), count);
+    } else {
+        count = command == QLatin1String("bench") ? 16 : 8;
+        if (parser.isSet(segments) && !positiveOption(parser, segments, count, error)) {
+            return usageError(error);
+        }
+        if (!positiveOption(parser, segment, length, error)) {
+            return usageError(error);
+        }
+        if (command == QLatin1String("bench")) {
+            rfx::printSpeed(positional[0], levelValue, count, length);
+        } else {
+            rfx::printGpuCheck(positional[0], levelValue, count, length, parser.isSet(withRef));
+        }
+    }
+    return kExitOk;
+}
+
 void printHelp()
 {
     std::fputs(
@@ -408,6 +536,12 @@ void printHelp()
         "  add       Write a .rfx file with more captures\n"
         "  info      Show what an .rfx file holds (--yaml: the whole metadata)\n"
         "  unpack    Rebuild the original files, checked by SHA-256 (--meta: metadata only)\n"
+        "\n"
+        "Development:\n"
+        "  noise     How noisy each capture is (the cost of coding it alone, on the same frames)\n"
+        "  refsel    Would other references have cost less for one capture?\n"
+        "  bench     Single-thread speed of each stage, on a 16-bit capture\n"
+        "  gpu-check The predictor on the CPU and on the GPU, on a 16-bit capture\n"
         "\n"
         "Run 'rfx <command> --help' for the options of a command.\n",
         stdout);
@@ -450,6 +584,9 @@ int main(int argc, char *argv[])
         if (command == QLatin1String("merge") || command == QLatin1String("extract") || command == QLatin1String("remove") || command == QLatin1String("add")) {
             return runEdit(command, rest);
         }
+        if (command == QLatin1String("noise") || command == QLatin1String("refsel") || command == QLatin1String("bench") || command == QLatin1String("gpu-check")) {
+            return runDiagnostic(command, rest);
+        }
         if (command == QLatin1String("info")) {
             return runInfo(rest);
         }
@@ -463,5 +600,5 @@ int main(int argc, char *argv[])
         std::fprintf(stderr, "rfx: %s\n", e.what());
         return kExitFailed;
     }
-    return usageError(QStringLiteral("unknown command '%1' (pack, merge, extract, remove, add, info, unpack)").arg(command));
+    return usageError(QStringLiteral("unknown command '%1' (pack, merge, extract, remove, add, info, unpack, noise, refsel, bench, gpu-check)").arg(command));
 }
