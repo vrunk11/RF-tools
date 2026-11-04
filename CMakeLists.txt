@@ -83,10 +83,18 @@ if(ENABLE_NATIVE_OPTIMIZATION)
 endif()
 
 find_package(Qt6 REQUIRED COMPONENTS Core)
+# The window of rf-analyse needs Qt Widgets; where Qt has none, the command line
+# tools are built all the same.
+find_package(Qt6 QUIET COMPONENTS Widgets Test)
 
 add_subdirectory(src/library)
 add_subdirectory(src/rfx)
 add_subdirectory(src/requantize)
+if(TARGET Qt6::Widgets)
+    add_subdirectory(src/analyse)
+else()
+    message(STATUS "Qt6 Widgets not found: rf-analyse is not built")
+endif()
 
 if(BUILD_TESTING)
     add_subdirectory(tests)

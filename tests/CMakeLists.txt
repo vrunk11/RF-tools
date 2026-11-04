@@ -15,6 +15,14 @@ target_link_libraries(rf-analyse-tests PRIVATE rfx-library Qt6::Core)
 add_test(NAME rf-analyse-tests COMMAND rf-analyse-tests)
 set_tests_properties(rf-analyse-tests PROPERTIES LABELS unit)
 
+# The window of rf-analyse, driven on an offscreen screen (needs Qt Widgets and Qt Test).
+if(TARGET rf-analyse-gui AND TARGET Qt6::Test)
+    add_executable(rf-analyse-gui-tests analyse_gui_tests.cpp)
+    target_link_libraries(rf-analyse-gui-tests PRIVATE rf-analyse-gui Qt6::Widgets Qt6::Test)
+    add_test(NAME rf-analyse-gui-tests COMMAND rf-analyse-gui-tests)
+    set_tests_properties(rf-analyse-gui-tests PROPERTIES LABELS unit ENVIRONMENT "QT_QPA_PLATFORM=offscreen")
+endif()
+
 add_executable(rfx-roundtrip-tests roundtrip_tests.cpp)
 target_link_libraries(rfx-roundtrip-tests PRIVATE rfx-library Qt6::Core)
 add_test(NAME rfx-roundtrip-tests COMMAND rfx-roundtrip-tests)

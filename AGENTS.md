@@ -69,8 +69,9 @@ bit of the predictor, and a C++ tool is correct when it gives that crate's outpu
 | --- | --- | --- |
 | `src/rfx/` | `rfx` | The command line tool: `pack`, `unpack`, `info`, `merge`, `extract`, `remove`, `add`, and the diagnostics `noise`, `refsel`, `bench`, `gpu-check` (ported from the Rust `rfx`, except its `lab` experiments; the FLAC variant goes through ffmpeg) |
 | `src/requantize/` | `rf-requantize` | Requantising a capture or the tracks of an `.rfx` file as the Domesday Duplicator's capture application does (ported from its `ddd-requantize`); reads and writes `.rfx` files and captures, always in the format of the input (FLAC through ffmpeg; no ld-decode, the lag tables are kept). See `docs/rf-requantize.md` |
+| `src/analyse/` | `rf-analyse` | The window (Qt Widgets) that shows the RF signal of the tracks of an `.rfx` file or of a raw or FLAC capture (a table asks what captures do not say; several files open together): tracks, metadata, waveform, spectrum, statistics, speed deviation. Needs Qt Widgets, and is not built where Qt has none. See `docs/rf-analyse.md` |
 | `src/library/` | (static library `rfx-library`) | The format: container, metadata, predictor (CPU, and OpenCL in `kernel.cl`, loaded at run time), range coder, lag tables, reference windows, packing, editing, unpacking, conversion; the requantiser (`requantizer.*`, the streams and files it works on in `requantize.*`, whole jobs in `requantizejob.cpp`), and reading at any place (`trackreader.*` decodes only the segments asked for, `analysis.*` makes spectra, statistics and lag series). Shared by every tool |
-| `tests/` | `rfx-library-tests`, `rfx-roundtrip-tests`, `rf-requantize-tests`, `rf-analyse-tests` | The unit tests (CTest label `unit`) |
+| `tests/` | `rfx-library-tests`, `rfx-roundtrip-tests`, `rf-requantize-tests`, `rf-analyse-tests`, `rf-analyse-gui-tests` | The unit tests (CTest label `unit`) |
 
 ### 1.2 Repository layout
 

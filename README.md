@@ -23,6 +23,10 @@ these files directly. The sister project for what comes after the decoder is
 *Fewer bits for a capture, as far as its own noise allows*
 - **rf-requantize** - The Domesday Duplicator's `ddd-requantize`, ported: cuts a capture or the tracks of an `.rfx` file to as few bits as their noise allows, as the capture application does, and codes the result again in the same format (an `.rfx` file stays one, with its lag tables kept, so no ld-decode is needed; FLAC stays FLAC). It never changes formats. Not lossless: keep the original. See [docs/rf-requantize.md](docs/rf-requantize.md)
 
+### Looking
+*The RF signal of every capture, without unpacking*
+- **rf-analyse** - A window in the style of ld-analyse and ld-stacker-gui for `.rfx` files and raw or FLAC captures, several at once (it asks for the format and the rate of the captures): the tracks as a list, the metadata of the selected one, the RF waveform with a bar to move, the spectrum and the statistics (mean amplitude, SNR, noise floor, effective bits) at the bar or over a zone, and the speed deviation of every track against its reference over the whole capture (0 is no TBC correction, above is faster, below slower). Only the segments on the screen are decoded. See [docs/rf-analyse.md](docs/rf-analyse.md)
+
 ## Using `rfx`
 
 ```bash
@@ -49,6 +53,17 @@ Each track is requantised on its own, and the result is compared with the refere
 it. The lag tables of an `.rfx` input are kept, so no ld-decode is needed. See
 [docs/rf-requantize.md](docs/rf-requantize.md).
 
+## Using `rf-analyse`
+
+```bash
+rf-analyse disc.rfx                                    # or File > Open RF file, or drop the file on the window
+rf-analyse capture.s16 --rate 40                       # a raw capture: without --rate a dialog asks for the format and the rate
+rf-analyse disc.rfx capture.s16 --rate 40               # several files at once: their tracks one after the other
+rf-analyse disc.rfx --view lanes --screenshot lanes.png # a picture of the window, with no screen needed (QT_QPA_PLATFORM=offscreen)
+```
+
+It needs Qt Widgets; where Qt has none, the command line tools are built without it. See [docs/rf-analyse.md](docs/rf-analyse.md).
+
 ## Building
 
 The tools build with CMake against Qt 6, as ld-decode-tools does. See [BUILD.md](BUILD.md):
@@ -67,6 +82,7 @@ Ready-made packages for Linux (tarball), macOS (tarball) and Windows (ZIP) are b
 
 - [docs/Specifications/rfx-format.md](docs/Specifications/rfx-format.md) - the `.rfx` format, enough to write a reader
 - [docs/rf-requantize.md](docs/rf-requantize.md) - requantising captures and `.rfx` files, and comparing the settings
+- [docs/rf-analyse.md](docs/rf-analyse.md) - the window that shows the waveform, spectrum, noise and drift of the tracks of an `.rfx` file
 
 Development: [BUILD.md](BUILD.md), [INSTALL.md](INSTALL.md), [TESTING.md](TESTING.md),
 [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).
