@@ -77,7 +77,9 @@ jobs:
             -DAPP_BRANCH=github-actions \
             -DAPP_COMMIT=${{ steps.version.outputs.version }}
           cmake --build build --parallel
-          test -x build/bin/rfx || { echo "::error::rfx was not built"; exit 1; }
+          for exe in rfx rf-requantize; do
+            test -x "build/bin/${exe}" || { echo "::error::${exe} was not built"; exit 1; }
+          done
 
       # macdeployqt works on application bundles only: the program is not one, so
       # the Qt framework it loads is copied beside it and found through an rpath.
@@ -88,12 +90,14 @@ jobs:
           name="rf-tools-${{ steps.version.outputs.version }}-macos-$(uname -m)"
           rm -rf package-root
           mkdir -p "package-root/${name}/bin" "package-root/${name}/lib"
-          cp build/bin/rfx "package-root/${name}/bin/"
+          cp build/bin/rfx build/bin/rf-requantize "package-root/${name}/bin/"
           cp -R "${QT_ROOT_DIR}/lib/QtCore.framework" "package-root/${name}/lib/"
           rm -rf "package-root/${name}/lib/QtCore.framework/Headers" "package-root/${name}/lib/QtCore.framework/Versions/A/Headers"
-          install_name_tool -add_rpath "@executable_path/../lib" "package-root/${name}/bin/rfx"
           codesign --force --sign - --timestamp=none "package-root/${name}/lib/QtCore.framework"
-          codesign --force --sign - --timestamp=none "package-root/${name}/bin/rfx"
+          for exe in rfx rf-requantize; do
+            install_name_tool -add_rpath "@executable_path/../lib" "package-root/${name}/bin/${exe}"
+            codesign --force --sign - --timestamp=none "package-root/${name}/bin/${exe}"
+          done
           cp README.md LICENSE "package-root/${name}/"
           echo "name=${name}" > package-root/name.env
 
@@ -120,6 +124,7 @@ jobs:
             done < <(otool -L "$target" | tail -n +2 | grep -v ":$" | awk '{print $1}')
           done < <(
             echo "package-root/${name}/bin/rfx"
+            echo "package-root/${name}/bin/rf-requantize"
             find "package-root/${name}/lib" -type f -perm -u+x
           )
           if [[ "$FAIL" -ne 0 ]]; then
@@ -133,7 +138,8 @@ jobs:
           set -euo pipefail
           source package-root/name.env
           "package-root/${name}/bin/rfx" --version
-          echo "rfx: ok"
+          "package-root/${name}/bin/rf-requantize" --version
+          echo "rfx, rf-requantize: ok"
 
       - name: Create tarball
         shell: bash

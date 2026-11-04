@@ -220,7 +220,7 @@ uint64_t copyBlocks(QFile &out, Archive &archive, size_t src, size_t k)
     return total;
 }
 
-std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given, const std::vector<CaptureSpec> &specs,
+std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given, const std::vector<PackSpec> &specs,
                                               const LagTables &known, const QString &output, const PackOptions &o)
 {
     if (given.empty()) {
@@ -237,7 +237,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
             std::fprintf(stderr, "  [%.2f s] %s\n", std::chrono::duration<double>(std::chrono::steady_clock::now() - phaseStart).count(), what);
         }
     };
-    const bool edit = std::any_of(specs.begin(), specs.end(), [](const CaptureSpec &s) { return s.carry.has_value(); });
+    const bool edit = std::any_of(specs.begin(), specs.end(), [](const PackSpec &s) { return s.carry.has_value(); });
     // Compressed captures (FLAC, Ogg-FLAC) are decoded to raw 16-bit files first:
     // the references are read at arbitrary positions.
     const DecodedInputs decoded = decodeCompressed(given, output, o.format);
@@ -263,7 +263,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
     for (size_t k = 0; k < inputs.size(); ++k) {
         fmts.push_back(specs[k].carry ? specs[k].carry->format() : inputFormat(inputs[k], o.format));
     }
-    const size_t toScan = static_cast<size_t>(std::count_if(specs.begin(), specs.end(), [](const CaptureSpec &s) { return !s.carry; }));
+    const size_t toScan = static_cast<size_t>(std::count_if(specs.begin(), specs.end(), [](const PackSpec &s) { return !s.carry; }));
     if (toScan > 0) {
         std::fprintf(stderr, "hashing and scanning %zu files\n", toScan);
     }
@@ -293,7 +293,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
     // given), then the order to code them in.
     bool needTables = false;
     for (size_t k = 1; k < specs.size(); ++k) {
-        needTables = needTables || !specs[k].frozen;
+        needTables = needTables || !specs[k].settled();
     }
     std::vector<std::vector<Field>> fields;
     if (inputs.size() > 1 && needTables) {
@@ -360,7 +360,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
             v[k] = std::move(copy[ord[k]]);
         }
     };
-    std::vector<CaptureSpec> places = specs;
+    std::vector<PackSpec> places = specs;
     reorder(inputs);
     reorder(origs);
     reorder(names);
@@ -374,7 +374,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
     LagTables &tables = prepared->tables;
     for (size_t k = 1; k < inputs.size(); ++k) {
         for (size_t j = 0; j < k; ++j) {
-            if (places[k].frozen) {
+            if (places[k].settled()) {
                 const auto it = known.find({k, j});
                 if (it != known.end()) {
                     tables[{k, j}] = it->second;
@@ -435,9 +435,26 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
         }
         sm.position = edit ? k : ord[k];
         sm.noise = noise[k];
+        if (places[k].like) {
+            // Coded as the track it is made from was.
+            const SourceMeta &l = *places[k].like;
+            sm.own = l.own;
+            sm.solo = l.solo;
+            sm.taps = l.taps;
+            sm.ntop = l.ntop;
+            sm.ttaps = l.ttaps;
+            sm.stride = l.stride;
+            sm.every = l.every;
+            sm.lamBits = l.lamBits;
+            sm.refs = l.refs;
+            sm.weights = l.weights;
+            sm.noise = l.noise;
+        }
         sm.sidecars = carry ? carry->sidecars : findSidecars(origs[k]);
         if (carry && carry->rateHz > 0) {
             sm.rateHz = carry->rateHz;
+        } else if (places[k].like && places[k].like->rateHz > 0) {
+            sm.rateHz = places[k].like->rateHz;
         } else {
             const std::optional<double> hz = sidecarRateHz(sm.sidecars);
             sm.rateHz = hz ? *hz : o.rateMhz * 1e6;
@@ -462,12 +479,12 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
         std::vector<std::vector<size_t>> chosenRefs(inputs.size());
         std::vector<std::vector<float>> chosenWeights(inputs.size());
         for (size_t k = 0; k < inputs.size(); ++k) {
-            if (!places[k].frozen) {
+            if (!places[k].settled()) {
                 chooseRefs(windows, files, meta, k, threads, chosenRefs[k], chosenWeights[k]);
             }
         }
         for (size_t k = 0; k < inputs.size(); ++k) {
-            if (places[k].frozen) {
+            if (places[k].settled()) {
                 continue;
             }
             for (const size_t j : meta.sources[k].refs) {
@@ -482,7 +499,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
         // their own (and a shorter own history) against the plain mean, and keep
         // what costs less on a few windows.
         for (size_t k = 0; k < inputs.size(); ++k) {
-            if (places[k].frozen) {
+            if (places[k].settled()) {
                 continue;
             }
             SourceMeta &sm = meta.sources[k];
@@ -657,9 +674,87 @@ std::vector<PackedTrack> writePrepared(PreparedPack &prepared, const QString &ou
 
 std::vector<PackedTrack> packCaptures(const std::vector<QString> &inputs, const QString &output, const PackOptions &options)
 {
-    const std::vector<CaptureSpec> specs(inputs.size());
+    const std::vector<PackSpec> specs(inputs.size());
     std::unique_ptr<PreparedPack> prepared = prepareCaptures(inputs, specs, {}, output, options);
     return writePrepared(*prepared, output, options, std::vector<std::optional<CopiedTrack>>(inputs.size()));
+}
+
+std::vector<PackedTrack> packCapturesLike(const std::vector<QString> &inputs, const QString &archivePath, const std::vector<size_t> &tracks,
+                                          const QString &output, const PackOptions &options, std::optional<double> rateHz)
+{
+    if (inputs.empty() || inputs.size() != tracks.size()) {
+        throw Error("every capture needs the track of the archive it is made from");
+    }
+    Archive like(archivePath);
+    const std::vector<SourceMeta> &sources = like.meta().sources;
+    std::map<size_t, size_t> placeOf;
+    for (size_t k = 0; k < tracks.size(); ++k) {
+        if (tracks[k] >= sources.size()) {
+            throw Error(archivePath.toStdString() + " has " + std::to_string(sources.size()) + " tracks: no track " + std::to_string(tracks[k]));
+        }
+        if (k > 0 && tracks[k] <= tracks[k - 1]) {
+            throw Error("the tracks must be given in the order of the archive");
+        }
+        placeOf[tracks[k]] = k;
+        const SourceMeta &sm = sources[tracks[k]];
+        if (formatSamples(sm.format(), static_cast<uint64_t>(QFileInfo(inputs[k]).size())) != sm.words) {
+            throw Error(inputs[k].toStdString() + " does not have the samples of track " + std::to_string(tracks[k]) + " of the archive");
+        }
+    }
+
+    // What each track keeps of the archive's coding: the references that are still
+    // there, with their weights as they were, and the lag tables against them.
+    std::vector<PackSpec> specs(inputs.size());
+    LagTables known;
+    for (size_t k = 0; k < tracks.size(); ++k) {
+        SourceMeta m = sources[tracks[k]];
+        std::vector<size_t> refs;
+        std::vector<float> weights;
+        bool dropped = false;
+        for (size_t i = 0; i < m.refs.size(); ++i) {
+            const auto place = placeOf.find(m.refs[i]);
+            if (place == placeOf.end()) {
+                dropped = true;
+                continue;
+            }
+            const auto table = like.tables().find({tracks[k], m.refs[i]});
+            if (table == like.tables().end()) {
+                throw Error(m.name + ": lag table against track " + std::to_string(m.refs[i]) + " is missing");
+            }
+            known[{k, place->second}] = table->second;
+            refs.push_back(place->second);
+            if (!m.weights.empty()) {
+                weights.push_back(m.weights[i]);
+            }
+        }
+        if (dropped && !weights.empty()) {
+            // They add up to 1 again.
+            float sum = 0.0F;
+            for (const float w : weights) {
+                sum += w;
+            }
+            for (float &w : weights) {
+                w /= sum;
+            }
+        }
+        // (a track left with no reference is coded from its own past, as it was
+        // when it had none: `solo` is its history, and `ntop` has nothing to take)
+        m.refs = refs;
+        m.weights = weights;
+        m.ntop = std::min(m.ntop, refs.size());
+        if (rateHz) {
+            m.rateHz = *rateHz;
+        }
+        specs[k].like = std::move(m);
+    }
+
+    PackOptions o = options;
+    o.order = OrderMode::Given;
+    o.format = "auto";
+    // Cut into segments as the archive was.
+    o.segment = like.meta().segment;
+    std::unique_ptr<PreparedPack> prepared = prepareCaptures(inputs, specs, known, output, o);
+    return writePrepared(*prepared, output, o, std::vector<std::optional<CopiedTrack>>(inputs.size()));
 }
 
 } // namespace rfx

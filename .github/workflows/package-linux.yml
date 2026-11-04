@@ -78,7 +78,9 @@ jobs:
             -DAPP_BRANCH=github-actions \
             -DAPP_COMMIT=${{ steps.version.outputs.version }}
           cmake --build build --parallel
-          test -x build/bin/rfx || { echo "::error::rfx was not built"; exit 1; }
+          for exe in rfx rf-requantize; do
+            test -x "build/bin/${exe}" || { echo "::error::${exe} was not built"; exit 1; }
+          done
 
       - name: Install into AppDir
         shell: bash
@@ -122,7 +124,8 @@ jobs:
         run: |
           set -euo pipefail
           AppDir/usr/bin/rfx --version
-          echo "rfx (AppDir): ok"
+          AppDir/usr/bin/rf-requantize --version
+          echo "rfx, rf-requantize (AppDir): ok"
 
       - name: Assemble artifacts
         shell: bash

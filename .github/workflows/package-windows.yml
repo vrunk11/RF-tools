@@ -78,9 +78,11 @@ jobs:
 
           cmake --build build --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          if (-not (Test-Path build\bin\rfx.exe)) {
-            Write-Error "rfx.exe was not built"
-            exit 1
+          foreach ($exe in "rfx.exe", "rf-requantize.exe") {
+            if (-not (Test-Path "build\bin\$exe")) {
+              Write-Error "$exe was not built"
+              exit 1
+            }
           }
 
       - name: Assemble package
@@ -91,7 +93,7 @@ jobs:
           $stage = "dist\$name"
           New-Item -ItemType Directory -Force -Path $stage | Out-Null
 
-          Copy-Item build\bin\rfx.exe $stage
+          Copy-Item build\bin\rfx.exe, build\bin\rf-requantize.exe $stage
 
           # Qt runtime
           & windeployqt --release --no-translations "$stage\rfx.exe"
@@ -103,12 +105,14 @@ jobs:
         shell: pwsh
         run: |
           $stage = Get-ChildItem -Path dist -Directory | Select-Object -First 1
-          & "$($stage.FullName)\rfx.exe" --version
-          if ($LASTEXITCODE -ne 0) {
-            Write-Host "::error::rfx --version exited with $LASTEXITCODE"
-            exit 1
+          foreach ($exe in "rfx.exe", "rf-requantize.exe") {
+            & "$($stage.FullName)\$exe" --version
+            if ($LASTEXITCODE -ne 0) {
+              Write-Host "::error::$exe --version exited with $LASTEXITCODE"
+              exit 1
+            }
           }
-          Write-Host "rfx: ok"
+          Write-Host "rfx, rf-requantize: ok"
 
       - name: Create ZIP
         shell: pwsh

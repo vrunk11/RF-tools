@@ -5,6 +5,11 @@ target_link_libraries(rfx-library-tests PRIVATE rfx-library Qt6::Core)
 add_test(NAME rfx-library-tests COMMAND rfx-library-tests)
 set_tests_properties(rfx-library-tests PROPERTIES LABELS unit)
 
+add_executable(rf-requantize-tests requantize_tests.cpp)
+target_link_libraries(rf-requantize-tests PRIVATE rfx-library Qt6::Core)
+add_test(NAME rf-requantize-tests COMMAND rf-requantize-tests)
+set_tests_properties(rf-requantize-tests PROPERTIES LABELS unit)
+
 add_executable(rfx-roundtrip-tests roundtrip_tests.cpp)
 target_link_libraries(rfx-roundtrip-tests PRIVATE rfx-library Qt6::Core)
 add_test(NAME rfx-roundtrip-tests COMMAND rfx-roundtrip-tests)

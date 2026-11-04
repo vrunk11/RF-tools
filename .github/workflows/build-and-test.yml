@@ -82,7 +82,8 @@ jobs:
           set -euo pipefail
           ls -l result/bin
           ./result/bin/rfx --version
-          echo "rfx: ok"
+          ./result/bin/rf-requantize --version
+          echo "rfx, rf-requantize: ok"
 
   test-gate:
     name: Unit Tests

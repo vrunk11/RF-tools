@@ -123,7 +123,7 @@ void printReferenceChoice(const std::vector<QString> &inputs, const PackOptions 
 {
     PackOptions o = options;
     o.order = OrderMode::Given;
-    const std::unique_ptr<PreparedPack> prepared = prepareCaptures(inputs, std::vector<CaptureSpec>(inputs.size()), {}, QStringLiteral("refsel.rfx"), o);
+    const std::unique_ptr<PreparedPack> prepared = prepareCaptures(inputs, std::vector<PackSpec>(inputs.size()), {}, QStringLiteral("refsel.rfx"), o);
     const ArchiveMeta &meta = prepared->meta;
     if (k >= meta.sources.size()) {
         throw Error("the target is the place of a capture: 0 to " + std::to_string(meta.sources.size() - 1));

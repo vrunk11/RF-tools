@@ -19,6 +19,10 @@ these files directly. The sister project for what comes after the decoder is
 - **Other formats** - Give the captures back as `s16`, `r16`, `s8`, `r8`, `lds`, `flac` or `ldf`, or as the channels of FLAC files (eight a file) to look at in an audio program
 - **Metadata** - The whole metadata as YAML, and the `.yaml` files that sat beside the captures, without decoding a sample
 
+### Requantisation
+*Fewer bits for a capture, as far as its own noise allows*
+- **rf-requantize** - The Domesday Duplicator's `ddd-requantize`, ported: cuts a capture or the tracks of an `.rfx` file to as few bits as their noise allows, as the capture application does, and codes the result again in the same format (an `.rfx` file stays one, with its lag tables kept, so no ld-decode is needed; FLAC stays FLAC). It never changes formats. Not lossless: keep the original. See [docs/rf-requantize.md](docs/rf-requantize.md)
+
 ## Using `rfx`
 
 ```bash
@@ -32,6 +36,18 @@ rfx extract disc.rfx -o two.rfx --only 0,2             # editing: extract, remov
 With several captures, `pack` needs the positions of the lines of each capture, which it gets by
 running ld-decode's pass 0 (`--ld-decode`, or `--pass0 dir` for dumps already made). `pack --flac`,
 `unpack --as flac|ldf|mflac|<raw format>` and the FLAC variant need ffmpeg (or `FFMPEG=path`). `--device gpu` runs the predictor on an OpenCL GPU (`OpenCL.dll` or `libOpenCL.so.1` from the driver, loaded when used).
+
+## Using `rf-requantize`
+
+```bash
+rf-requantize --margin off disc.rfx reference.rfx    # the reference: nothing dropped
+rf-requantize --margin 0 --shaping adaptive --band 2-14 --depth 10,40 disc.rfx efm-10.rfx
+rf-requantize --rate 30 --margin 0 disc.s16          # no output: what a capture would have done
+```
+
+Each track is requantised on its own, and the result is compared with the reference by decoding
+it. The lag tables of an `.rfx` input are kept, so no ld-decode is needed. See
+[docs/rf-requantize.md](docs/rf-requantize.md).
 
 ## Building
 
@@ -50,6 +66,7 @@ Ready-made packages for Linux (tarball), macOS (tarball) and Windows (ZIP) are b
 ## Documentation
 
 - [docs/Specifications/rfx-format.md](docs/Specifications/rfx-format.md) - the `.rfx` format, enough to write a reader
+- [docs/rf-requantize.md](docs/rf-requantize.md) - requantising captures and `.rfx` files, and comparing the settings
 
 Development: [BUILD.md](BUILD.md), [INSTALL.md](INSTALL.md), [TESTING.md](TESTING.md),
 [CONTRIBUTING.md](CONTRIBUTING.md) and [AGENTS.md](AGENTS.md).

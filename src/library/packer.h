@@ -67,4 +67,14 @@ struct PackedTrack
 // the archive `output`. Progress goes to stderr. Throws rfx::Error.
 std::vector<PackedTrack> packCaptures(const std::vector<QString> &inputs, const QString &output, const PackOptions &options);
 
+// Pack `inputs` as `tracks` of the archive `archive` (in its order, one capture
+// for each), which they are the samples of, changed one by one (requantised): the
+// lines are where they were, so the references, weights, predictor parameters and
+// lag tables of the archive are kept and no line is located again (no pass 0, no
+// ld-decode). A reference that is not among `tracks` is dropped, with its weight.
+// The segments are the archive's, and so are the sample rates, unless `rateHz` gives
+// one. Of `options`, the device, the threads and the check are used. Throws rfx::Error.
+std::vector<PackedTrack> packCapturesLike(const std::vector<QString> &inputs, const QString &archive, const std::vector<size_t> &tracks,
+                                          const QString &output, const PackOptions &options, std::optional<double> rateHz = std::nullopt);
+
 } // namespace rfx

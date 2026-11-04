@@ -86,6 +86,7 @@ find_package(Qt6 REQUIRED COMPONENTS Core)
 
 add_subdirectory(src/library)
 add_subdirectory(src/rfx)
+add_subdirectory(src/requantize)
 
 if(BUILD_TESTING)
     add_subdirectory(tests)

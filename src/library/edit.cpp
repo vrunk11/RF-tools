@@ -89,7 +89,7 @@ void assembleArchives(const std::vector<QString> &archives, const std::vector<Pi
         }
     }
     // The spec of every pick, with the coding kept when it stays valid.
-    std::vector<CaptureSpec> specs;
+    std::vector<PackSpec> specs;
     LagTables known;
     std::vector<std::optional<CopiedTrack>> copy;
     for (size_t k = 0; k < picks.size(); ++k) {

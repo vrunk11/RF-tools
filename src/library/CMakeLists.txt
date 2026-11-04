@@ -18,6 +18,9 @@ add_library(rfx-library STATIC
     posfile.cpp
     predictor.cpp
     refwindow.cpp
+    requantize.cpp
+    requantizejob.cpp
+    requantizer.cpp
     residualmodel.cpp
     sampleformat.cpp
     segment.cpp
