@@ -1,5 +1,6 @@
 add_library(rfx-library STATIC
     alignment.cpp
+    analysis.cpp
     archive.cpp
     capture.cpp
     convert.cpp
@@ -25,6 +26,7 @@ add_library(rfx-library STATIC
     sampleformat.cpp
     segment.cpp
     sha256.cpp
+    trackreader.cpp
     yaml.cpp)
 
 target_include_directories(rfx-library PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

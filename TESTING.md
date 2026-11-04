@@ -12,6 +12,7 @@ slice and fails if a test carries neither.
 | `unit` | `rfx-library-tests`: the range coder and residual model, lag tables, sample formats, the container, the metadata, the YAML numbers, and the predictor against what the reference codes (bit for bit) | `tests/CMakeLists.txt` | the build only |
 | `unit` | `rfx-roundtrip-tests`: pack, edit and unpack synthetic captures, and check that the files come back as they went in | `tests/CMakeLists.txt` | the build only |
 | `unit` | `rf-requantize-tests`: the parsing of bands and depths, the quantiser, the samples the requantiser makes of a fixed capture (hashes taken from the Domesday Duplicator's requantiser), and whole jobs: `.rfx` in and out (lag tables kept, no ld-decode), one track or several, captures, FLAC and the FLAC variant (skipped without ffmpeg), the refusal of a change of format, the report alone | `tests/CMakeLists.txt` | the build only |
+| `unit` | `rf-analyse-tests`: the spectrum of a known signal (the bin, the level, the noise floor, the SNR), the speed as the slope of the lag (sign and size), `TrackReader` on raw captures (`.lds`, `.s16`, `.r8`: from any place, the bits found or given) and against the captures that were packed: windows inside a segment, across a boundary, over the ends and far away, of a track predicted from another | `tests/CMakeLists.txt` | the build only |
 
 Add a `functional` label (and its slice in `.github/workflows/build-and-test.yml`) when there
 are tests that run the program end to end over fixtures.

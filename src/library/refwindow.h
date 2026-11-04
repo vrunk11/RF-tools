@@ -16,6 +16,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <functional>
 #include <map>
 #include <utility>
 #include <vector>
@@ -23,13 +24,24 @@
 namespace rfx {
 
 // The reference tracks of a track, as files of their original samples (the
-// captures when packing, the files being unpacked when unpacking).
+// captures when packing, the files being unpacked when unpacking), or through a
+// loader that gives the samples of a track where they are asked for (a reader that
+// decodes only what it is asked).
 class ReferenceWindows
 {
 public:
+    // Fills `out` with the `n` canonical samples of track `track` from sample
+    // `start` (zero outside the track).
+    using Loader = std::function<void(size_t track, int64_t start, int32_t *out, size_t n)>;
+
     ReferenceWindows(const std::vector<PosFile *> &files, const ArchiveMeta &meta,
                      const std::map<std::pair<size_t, size_t>, LagTable> &tables)
-        : m_files(files), m_meta(meta), m_tables(tables)
+        : m_files(&files), m_meta(meta), m_tables(tables)
+    {
+    }
+
+    ReferenceWindows(Loader loader, const ArchiveMeta &meta, const std::map<std::pair<size_t, size_t>, LagTable> &tables)
+        : m_files(nullptr), m_loader(std::move(loader)), m_meta(meta), m_tables(tables)
     {
     }
 
@@ -54,7 +66,8 @@ private:
     // Add `weight` times reference `j` of track `k` over the positions [p0, p0 + len) to `dst`.
     void addReference(size_t k, size_t j, float weight, int64_t p0, size_t len, float *dst) const;
 
-    const std::vector<PosFile *> &m_files;
+    const std::vector<PosFile *> *m_files;
+    Loader m_loader;
     const ArchiveMeta &m_meta;
     const std::map<std::pair<size_t, size_t>, LagTable> &m_tables;
 };

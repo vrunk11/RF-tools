@@ -52,7 +52,11 @@ void ReferenceWindows::addRange(size_t j, int64_t lo, int64_t hi, float weight, 
 {
     const SourceMeta &rj = m_meta.sources[j];
     std::vector<int32_t> buf(static_cast<size_t>(hi - lo));
-    loadSamples(rj.format(), *m_files[j], rj.words, lo, buf.data(), buf.size());
+    if (m_loader) {
+        m_loader(j, lo, buf.data(), buf.size());
+    } else {
+        loadSamples(rj.format(), *(*m_files)[j], rj.words, lo, buf.data(), buf.size());
+    }
     for (size_t i = 0; i < buf.size(); ++i) {
         const int32_t v = (buf[i] >> rj.shift) - rj.mean;
         const float term = weight * static_cast<float>(v);
