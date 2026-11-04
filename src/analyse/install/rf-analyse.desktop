@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=rf-analyse
+Comment=Look at the RF captures stored in .rfx files
+Exec=rf-analyse %f
+Icon=rf-analyse
+Terminal=false
+Categories=AudioVideo;Video;Utility;
