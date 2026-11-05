@@ -343,6 +343,20 @@ one half, `prev_gap = 1`, `prev_mag = 0`, `prev_up = 0`, `prev_sign = 0`:
 Arrays: `cls` 24 x 65, `mant` 65, `sign` 3, `esc` 1, `same` 2, `smag` 4 x 3,
 all of `P2`.
 
+### 7.1 Where the lags come from (informative)
+
+A reader needs only the table; a writer makes it from where the *lines* of each capture stand. Each capture is located line by line
+(the "pass 0" of ld-decode: for every field, the sample position of each of its lines, and the frame code read from its VBI lines),
+the fields of two captures with the same frame code and parity (the first such field of each) are paired, and their lines give pairs
+(position in the target, position in the reference), sorted by the first. The lag at a sample `p` of the target is the position in
+the reference interpolated linearly between the pairs on each side of `p`, minus `p` (the lag of the first or the last pair outside
+the pairs). It is taken every 64 samples, averaged over 16 lines, and made a step function: a value is kept until the average
+leaves it by more than a *hysteresis* (0.75 sample, or 1.5 for the coarser tables), and then becomes the nearest integer.
+The tables are therefore not unique, and two writers need not agree on them; any table is correct as long as the predictor and the
+reader use the same one, which is why it is stored. `rfx pack` locates the lines itself from the RF of each capture (a port of the
+`rfsync` module of ld-decode-rust, which gives the same positions as ld-decode's own pass 0), or reads dumps of ld-decode's pass 0
+(`--pass0`), or runs ld-decode (`--ld-decode`).
+
 ## 8. Range coder and residual model
 
 ### 8.1 Range coder
@@ -454,6 +468,7 @@ and the reader; `vrunk11_main` has the reader only (`pack.rs` there is `archive.
 | range coder, residual model | `crates/rfx/src/rc.rs`, `model.rs` |
 | lag tables | `crates/rfx/src/align.rs` |
 | random-access reader for ld-decode | `crates/rfx/src/reader.rs` |
+| pass 0, the lines of a capture from its RF | `crates/ld-decode-cli/src/rfsync.rs` (and `stack.rs`) |
 | FLAC variant | `crates/rfx/src/flacmode.rs` |
 
 The C++ tools of this repository (`src/library/`) implement the same format and
@@ -472,5 +487,7 @@ fixed segments, as the reference writes them, for every predictor level.
 | segments | `src/library/segment.cpp` |
 | range coder, residual model | `src/library/rangecoder.h`, `residualmodel.cpp` |
 | lag tables | `src/library/lagtable.cpp` |
+| pass 0 (lines and frame codes from the RF), dumps, pairing of fields | `src/library/rfsync.cpp`, `alignment.cpp` |
+| reading at any place (the samples of any track over any range, decoding only the segments needed) | `src/library/trackreader.cpp`, `refwindow.cpp` |
 | reference windows | `src/library/refwindow.cpp` |
 | FLAC variant (through ffmpeg) | `src/library/flacmode.cpp` |
