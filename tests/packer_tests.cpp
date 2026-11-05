@@ -324,7 +324,8 @@ void PackerTests::codecsAndTheFormatOfTheList()
         QVERIFY(doc.isChanged());
     }
     {
-        // Raw: the captures of the archive come back as files, with a new one beside them.
+        // Raw: the samples as they are, in a Matroska file (the tracks of the archive are decoded first, a new one is added; ffmpeg).
+        bool ffmpeg = true;
         MainWindow w;
         QVERIFY(w.openArchive(m_archive));
         QVERIFY(w.addCaptures({m_dir.filePath("c.ddd.s16")}));
@@ -335,11 +336,35 @@ void PackerTests::codecsAndTheFormatOfTheList()
         QTest::qWait(20);
         auto *rate = w.findChild<QDoubleSpinBox *>("formatRate");
         QVERIFY(rate && !rate->isEnabled());
-        const QString folder = m_dir.filePath("raw_out");
-        QVERIFY(w.process(folder, nullptr));
-        QVERIFY(QFileInfo(folder + "/a.ddd.s16").size() == static_cast<qint64>(kSamples * 2));
-        QVERIFY(QFileInfo(folder + "/b.ddd.s16").exists());
-        QVERIFY(QFileInfo(folder + "/c.ddd.s16").exists());
+        rfx::PackOptions o = options();
+        o.rateMhz = 75.0;
+        ffmpeg = w.process(m_dir.filePath("raw.rfx"), &o);
+        if (ffmpeg) {
+            std::string stored;
+            const std::vector<rfx::SourceMeta> tracks = rfx::readFlacMeta(m_dir.filePath("raw.rfx"), &stored);
+            QCOMPARE(QString::fromStdString(stored), QStringLiteral("raw"));
+            QCOMPARE(tracks.size(), size_t(3));
+            QCOMPARE(QString::fromStdString(tracks[2].name), QStringLiteral("c.ddd.s16"));
+            QVERIFY(tracks[0].fileTime.has_value());
+            // The file is about as large as the captures: nothing is coded.
+            QVERIFY(QFileInfo(m_dir.filePath("raw.rfx")).size() > static_cast<qint64>(3 * kSamples * 2));
+        }
+        if (ffmpeg) {
+            // The raw file opens again, its tracks are listed with its codec, and one of them goes to the predictor.
+            MainWindow again;
+            QVERIFY(again.openArchive(m_dir.filePath("raw.rfx")));
+            QCOMPARE(again.document()->count(), 3);
+            QVERIFY(again.document()->codec() == Codec::Raw);
+            again.document()->remove(1);
+            again.document()->remove(2);
+            again.document()->setCodec(Codec::Rfx);
+            rfx::PackOptions back = options();
+            QVERIFY(again.process(m_dir.filePath("back.rfx"), &back));
+            rfx::Archive archive(m_dir.filePath("back.rfx"));
+            QCOMPARE(archive.meta().sources.size(), size_t(1));
+            QCOMPARE(QString::fromStdString(archive.meta().sources[0].name), QStringLiteral("a.ddd.s16"));
+            QCOMPARE(archive.meta().sources[0].words, static_cast<uint64_t>(kSamples));
+        }
     }
     {
         // FLAC: an ordinary audio file (it needs ffmpeg).

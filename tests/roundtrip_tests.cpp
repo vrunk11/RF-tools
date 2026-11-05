@@ -12,12 +12,15 @@
 #include "archive.h"
 #include "edit.h"
 #include "error.h"
+#include "convert.h"
+#include "flacmode.h"
 #include "opencl.h"
 #include "packer.h"
 #include "sampleformat.h"
 
 #include <QDir>
 #include <QFile>
+#include <QFileInfo>
 #include <QTemporaryDir>
 
 #include <cmath>
@@ -331,12 +334,79 @@ void testEditedTracks()
     }
 }
 
+// The raw variant: the samples as they are, as PCM tracks of a Matroska file; and the FLAC variant beside it (both need ffmpeg).
+void testStoredVariants()
+{
+    QTemporaryDir dir;
+    const QByteArray a = duplicatorCapture(200000, 0, 1);
+    const QByteArray b = duplicatorCapture(200000, 3, 2);
+    writeFile(dir.filePath("a.ddd.s16"), a);
+    writeFile(dir.filePath("b.ddd.s16"), b);
+    writeFile(dir.filePath("a.ddd.yaml"), "{\n  \"sample_rate_hz\": 40000000\n}\n");
+    rfx::PackOptions options = testOptions();
+    options.rateMhz = 40.0;
+    for (const rfx::StoredCodec codec : {rfx::StoredCodec::Raw, rfx::StoredCodec::Flac}) {
+        const bool raw = codec == rfx::StoredCodec::Raw;
+        const QString file = dir.filePath(raw ? "raw.rfx" : "flac.rfx");
+        try {
+            rfx::packFlac({dir.filePath("a.ddd.s16"), dir.filePath("b.ddd.s16")}, file, options, codec);
+        } catch (const rfx::Error &e) {
+            std::puts("rfx-roundtrip-tests: no ffmpeg, the Matroska variants are not tested");
+            return;
+        }
+        CHECK(rfx::isFlacArchive(file));
+        std::string stored;
+        const std::vector<rfx::SourceMeta> tracks = rfx::readFlacMeta(file, &stored);
+        CHECK(stored == (raw ? "raw" : "flac"));
+        CHECK(tracks.size() == 2);
+        CHECK(tracks[0].rateHz == 40e6);
+        CHECK(tracks[0].fileTime.has_value());
+        CHECK(rfx::flacInfo(file).find(raw ? "raw PCM" : "FLAC") != std::string::npos);
+        // The raw file holds the samples as they are (and so is about as large as they are); the FLAC one is smaller.
+        const qint64 size = QFileInfo(file).size();
+        CHECK(raw ? size > a.size() + b.size() : size < a.size() + b.size());
+        const QString out = dir.filePath(raw ? "out_raw" : "out_flac");
+        rfx::unpackFlac(file, out, std::nullopt, std::nullopt);
+        CHECK(readAll(out + "/a.ddd.s16") == a);
+        CHECK(readAll(out + "/b.ddd.s16") == b);
+        rfx::exportMultichannelFlac(file, dir.filePath(raw ? "mflac_raw" : "mflac_flac"), std::nullopt);
+        CHECK(QFileInfo(dir.filePath(raw ? "mflac_raw" : "mflac_flac") + "/" + QFileInfo(file).completeBaseName() + ".flac").size() > 0);
+
+        // The editing commands work on the variant and keep it: extract, remove, merge, add, and a note put on a track.
+        const QString onlyA = dir.filePath(raw ? "only_a_raw.rfx" : "only_a_flac.rfx");
+        const QString onlyB = dir.filePath(raw ? "only_b_raw.rfx" : "only_b_flac.rfx");
+        rfx::assembleArchives({file}, rfx::pickSome(file, {0}), onlyA, options, std::nullopt);
+        rfx::assembleArchives({file}, rfx::pickWithout(file, {0}), onlyB, options, std::nullopt);
+        std::string codecName;
+        CHECK(rfx::readFlacMeta(onlyA, &codecName).size() == 1 && codecName == (raw ? "raw" : "flac"));
+        CHECK(rfx::readFlacMeta(onlyB).at(0).name == "b.ddd.s16");
+        const QString merged = dir.filePath(raw ? "merged_raw.rfx" : "merged_flac.rfx");
+        rfx::assembleArchives({onlyB, onlyA}, rfx::pickAll({onlyB, onlyA}), merged, options, std::nullopt);
+        const std::vector<rfx::SourceMeta> mergedTracks = rfx::readFlacMeta(merged);
+        CHECK(mergedTracks.size() == 2 && mergedTracks[0].name == "b.ddd.s16" && mergedTracks[1].name == "a.ddd.s16");
+        CHECK(mergedTracks[1].fileTime == tracks[0].fileTime && mergedTracks[1].rateHz == 40e6);
+        std::vector<rfx::Pick> more = rfx::pickAll({file});
+        writeFile(dir.filePath("c.ddd.s16"), a);
+        more.push_back(rfx::Pick::fresh(dir.filePath("c.ddd.s16")));
+        more[1].edit.notes = std::string("the second");
+        more[1].edit.name = std::string("second.s16");
+        const QString added = dir.filePath(raw ? "added_raw.rfx" : "added_flac.rfx");
+        rfx::assembleArchives({file}, more, added, options, std::nullopt);
+        const std::vector<rfx::SourceMeta> addedTracks = rfx::readFlacMeta(added);
+        CHECK(addedTracks.size() == 3 && addedTracks[2].name == "c.ddd.s16");
+        CHECK(addedTracks[1].notes == "the second" && addedTracks[1].name == "second.s16");
+        rfx::unpackFlac(added, dir.filePath(raw ? "out_added_raw" : "out_added_flac"), std::nullopt, std::nullopt);
+        CHECK(readAll(dir.filePath(raw ? "out_added_raw/second.s16" : "out_added_flac/second.s16")) == b);
+    }
+}
+
 int main()
 
 {
     testEveryFormat();
     testTwoCapturesWithReference();
     testEditedTracks();
+    testStoredVariants();
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

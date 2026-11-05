@@ -107,8 +107,9 @@ std::vector<uint8_t> serializeMeta(const ArchiveMeta &meta);
 
 // The metadata of the FLAC variant (the attachment rfx.json, specification 9): one
 // entry per audio track, with the predictor fields zero or empty.
-std::vector<SourceMeta> parseFlacMeta(const uint8_t *data, size_t size);
-std::vector<uint8_t> serializeFlacMeta(const std::vector<SourceMeta> &tracks);
+// The variant stores its tracks as FLAC (`codec` "flac") or as raw PCM (`codec` "raw"); parse says which in `codecOut`.
+std::vector<SourceMeta> parseFlacMeta(const uint8_t *data, size_t size, std::string *codecOut = nullptr);
+std::vector<uint8_t> serializeFlacMeta(const std::vector<SourceMeta> &tracks, const char *codec = "flac");
 
 // Lower-case hex of `bytes`.
 std::string toHex(const uint8_t *bytes, size_t size);

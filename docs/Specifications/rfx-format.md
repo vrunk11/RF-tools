@@ -411,34 +411,51 @@ most 32), the bits rebuild `v`, `u = v - 1`, `e = (u >> 1) ^ -(u & 1)`.
 
 The model reads past residuals only (through `avg`), never a prediction.
 
-## 9. The FLAC variant
+## 9. The FLAC and raw variants
 
 `rfx pack --flac` (off by default) replaces the predictor with FLAC, so that the
 file is an ordinary Matroska audio file that any audio or video program opens.
 There is no prediction between tracks, and the file is larger (about 28% of the
-capture's size instead of 24% on the Duplicator's captures). The file is
-written by ffmpeg's Matroska muxer; a reader needs only the following.
+capture's size instead of 24% on the Duplicator's captures). `rfx pack --raw` does
+the same with the samples as they are, as 16-bit PCM: the file is as large as the
+captures, and nothing has to be decoded to read it. Both files are written by
+ffmpeg's Matroska muxer and differ only in the codec of their tracks and in the
+field `codec` of `rfx.json`; a reader needs only the following.
 
-- **DocType** `matroska`. One audio track per capture, `CodecID` `A_FLAC`, in
-  the order of the captures, mono, 16-bit, with the sample rate `rate_hz /
-  1000` (an RF rate of 75 MHz is `75000` Hz; the FLAC header cannot say more),
-  the track's `Name`/title the capture's name. The `CodecPrivate` is the FLAC
-  stream header: `"fLaC"` and a STREAMINFO block (a reader accepts the header
-  with or without the `fLaC` marker). Each block holds one FLAC frame. The
-  frames of a stream have a fixed block size (STREAMINFO minimum = maximum);
-  frame `f` holds samples `f*N` to `f*N + N - 1`, and the last frame is shorter.
+- **DocType** `matroska`. One audio track per capture, in the order of the captures,
+  mono, 16-bit, with the sample rate `rate_hz / 1000` (an RF rate of 75 MHz is
+  `75000` Hz; the FLAC header cannot say more, and the raw variant keeps the same
+  rate), the track's `Name`/title the capture's name.
+  - **FLAC variant** (`codec` `"flac"`): `CodecID` `A_FLAC`. The `CodecPrivate` is the
+    FLAC stream header: `"fLaC"` and a STREAMINFO block (a reader accepts the header
+    with or without the `fLaC` marker). Each block holds one FLAC frame. The frames of
+    a stream have a fixed block size (STREAMINFO minimum = maximum); frame `f` holds
+    samples `f*N` to `f*N + N - 1`, and the last frame is shorter.
+  - **Raw variant** (`codec` `"raw"`): `CodecID` `A_PCM/INT/LIT`, 16 bits, signed,
+    little endian, no `CodecPrivate`. The samples of the track are those of the
+    original written one after the other, `2 * words` bytes in all, in the blocks in
+    order.
 - **Attachment** named `rfx.json` (MIME `application/json`): one JSON object
-  `{ "format": "rfx", "codec": "flac", "version": 1, "tracks": [ ... ] }` with
+  `{ "format": "rfx", "codec": "flac" or "raw", "version": 1, "tracks": [ ... ] }` with
   one entry per audio track, in order, in the schema of section 3 with the
   predictor fields (`own` ... `lam_bits`, `refs`, `weights`) zero or empty.
-- **Samples.** The FLAC samples `s` (16-bit signed) relate to the canonical
+- **Samples.** The samples `s` of the stream (FLAC or PCM, 16-bit signed) relate to the canonical
   samples `v` of section 1 by: `s16`, `lds`: `s = v`; `s8`: `s = v * 256`; `r8`:
   `s = (v - 128) * 256`; `r16`: `s = v - 32768`. The original file is rebuilt
   as in section 6 (samples written in the track's format, then `tail`) and
   checked against `sha256`.
 
-The predictor tools (`merge`, `extract`, `remove`, `add`) do not read this
-variant; `unpack`, `info` and ld-decode do.
+`unpack`, `info`, `merge`, `extract`, `remove` and `add` of `rfx` read these variants too (a reader tells them apart by `codec`), and so does
+ld-decode. There is nothing to keep or to lose in an edit, as the tracks do not refer to each other: a track is unpacked and written again
+with the others, in the variant of the first file; files of the predictor and of the variants are not written together.
+
+**Reading at any place.** A reader finds the samples of track `n` (the audio track with the `n`-th smallest track number; the attachment is not
+a track) from the blocks of the file, in the order they have in it: each block of a raw track holds `len / 2` samples, and each block of a FLAC
+track holds one frame, so `N` samples (`N` the fixed block size of the STREAMINFO), which gives the first sample of every block. It reads the
+blocks that hold the samples it wants: raw ones are the samples, and the FLAC frames are decodable from any frame of the stream when the
+stream header (`"fLaC"` and STREAMINFO, made the last metadata block) is put in front of them. The timestamps of the blocks are in
+milliseconds, which is more than the samples of a stream at 75 kHz (a millisecond is 75 samples): a reader that seeks by them is wrong by
+some tens of samples, and one that counts the samples is exact.
 
 ## 10. What a reader must check
 
@@ -469,7 +486,7 @@ and the reader; `vrunk11_main` has the reader only (`pack.rs` there is `archive.
 | lag tables | `crates/rfx/src/align.rs` |
 | random-access reader for ld-decode | `crates/rfx/src/reader.rs` |
 | pass 0, the lines of a capture from its RF | `crates/ld-decode-cli/src/rfsync.rs` (and `stack.rs`) |
-| FLAC variant | `crates/rfx/src/flacmode.rs` |
+| FLAC variant (the raw variant has no Rust writer yet) | `crates/rfx/src/flacmode.rs` |
 
 The C++ tools of this repository (`src/library/`) implement the same format and
 are checked against that implementation: packing the same captures gives the
@@ -488,6 +505,6 @@ fixed segments, as the reference writes them, for every predictor level.
 | range coder, residual model | `src/library/rangecoder.h`, `residualmodel.cpp` |
 | lag tables | `src/library/lagtable.cpp` |
 | pass 0 (lines and frame codes from the RF), dumps, pairing of fields | `src/library/rfsync.cpp`, `alignment.cpp` |
-| reading at any place (the samples of any track over any range, decoding only the segments needed) | `src/library/trackreader.cpp`, `refwindow.cpp` |
+| reading at any place (the samples of any track over any range, decoding only the segments needed) | `src/library/trackreader.cpp`, `refwindow.cpp` (the FLAC and raw variants: the blocks are indexed, `indexStored`) |
 | reference windows | `src/library/refwindow.cpp` |
-| FLAC variant (through ffmpeg) | `src/library/flacmode.cpp` |
+| FLAC and raw variants (through ffmpeg) | `src/library/flacmode.cpp` |

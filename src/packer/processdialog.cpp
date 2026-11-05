@@ -55,7 +55,7 @@ ProcessDialog::ProcessDialog(const QString &archive, Codec codec, QWidget *paren
     m_path = new QLineEdit(this);
     m_path->setObjectName(QStringLiteral("outputPath"));
     auto *browse = new QPushButton(tr("Browse…"), this);
-    pathRow->addWidget(new QLabel(codec == Codec::Raw ? tr("Folder") : tr("File"), this));
+    pathRow->addWidget(new QLabel(tr("File"), this));
     pathRow->addWidget(m_path, 1);
     pathRow->addWidget(browse);
     layout->addLayout(pathRow);
@@ -113,7 +113,7 @@ ProcessDialog::ProcessDialog(const QString &archive, Codec codec, QWidget *paren
         {
             const QString base = settings.value(QStringLiteral("lastDir")).toString();
             const QString stem = archive.isEmpty() ? QStringLiteral("new") : QFileInfo(archive).completeBaseName() + (codec == Codec::Flac ? QStringLiteral("-flac") : QStringLiteral("-raw"));
-            m_path->setText(QDir::cleanPath(base + QLatin1Char('/') + stem + (codec == Codec::Raw ? QString() : QStringLiteral(".rfx"))));
+            m_path->setText(QDir::cleanPath(base + QLatin1Char('/') + stem + QStringLiteral(".rfx")));
         }
     } else {
         updateOutput();
@@ -143,13 +143,6 @@ QString ProcessDialog::output() const
 
 void ProcessDialog::chooseOutput()
 {
-    if (m_codec == Codec::Raw) {
-        const QString dir = QFileDialog::getExistingDirectory(this, tr("Folder for the captures"), m_path->text());
-        if (!dir.isEmpty()) {
-            m_path->setText(dir);
-        }
-        return;
-    }
     const QString file = QFileDialog::getSaveFileName(this, tr("Write the .rfx file"), m_path->text(), tr("RFX archives (*.rfx)"));
     if (!file.isEmpty()) {
         m_path->setText(file.endsWith(QStringLiteral(".rfx"), Qt::CaseInsensitive) ? file : file + QStringLiteral(".rfx"));
@@ -177,7 +170,7 @@ void ProcessDialog::accept()
         QMessageBox::warning(this, windowTitle(), tr("Choose the file to write."));
         return;
     }
-    if (m_codec != Codec::Raw && !overwrites() && QFileInfo::exists(output())) {
+    if (!overwrites() && QFileInfo::exists(output())) {
         const auto answer = QMessageBox::question(this, windowTitle(), tr("%1 exists. Replace it?").arg(QFileInfo(output()).fileName()));
         if (answer != QMessageBox::Yes) {
             return;

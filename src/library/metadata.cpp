@@ -337,7 +337,7 @@ std::vector<uint8_t> serializeMeta(const ArchiveMeta &meta)
     return std::vector<uint8_t>(out.begin(), out.end());
 }
 
-std::vector<SourceMeta> parseFlacMeta(const uint8_t *data, size_t size)
+std::vector<SourceMeta> parseFlacMeta(const uint8_t *data, size_t size, std::string *codecOut)
 {
     QJsonParseError err;
     const QJsonDocument doc = QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char *>(data), static_cast<qsizetype>(size)), &err);
@@ -348,8 +348,11 @@ std::vector<SourceMeta> parseFlacMeta(const uint8_t *data, size_t size)
     const std::string format = stringField(root, "format", true);
     const std::string codec = stringField(root, "codec", true);
     const uint32_t version = static_cast<uint32_t>(unsignedField(root, "version", true));
-    if (format != kFormatName || codec != "flac" || version != kFormatVersion) {
-        throw Error("unsupported FLAC-mode archive (" + format + " " + codec + " v" + std::to_string(version) + ")");
+    if (format != kFormatName || (codec != "flac" && codec != "raw") || version != kFormatVersion) {
+        throw Error("unsupported FLAC or raw archive (" + format + " " + codec + " v" + std::to_string(version) + ")");
+    }
+    if (codecOut) {
+        *codecOut = codec;
     }
     const QJsonValue tracks = field(root, "tracks", true);
     if (!tracks.isArray()) {
@@ -370,9 +373,9 @@ std::vector<SourceMeta> parseFlacMeta(const uint8_t *data, size_t size)
     return out;
 }
 
-std::vector<uint8_t> serializeFlacMeta(const std::vector<SourceMeta> &tracks)
+std::vector<uint8_t> serializeFlacMeta(const std::vector<SourceMeta> &tracks, const char *codec)
 {
-    std::string out = "{\"format\":\"rfx\",\"codec\":\"flac\",\"version\":1,\"tracks\":[";
+    std::string out = std::string("{\"format\":\"rfx\",\"codec\":\"") + codec + "\",\"version\":1,\"tracks\":[";
     for (size_t i = 0; i < tracks.size(); ++i) {
         if (i) {
             out += ',';

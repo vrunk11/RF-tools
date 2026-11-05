@@ -13,6 +13,7 @@ these files directly. The sister project for what comes after the decoder is
 - **RFX files** - A Matroska-shaped container that stores each capture as the error of a predictor that sees its own past and the captures before it, so that the disc's own noise, which every capture shares, is paid for once. Lossless: unpacking gives the original files, checked by their SHA-256. Typically 22-24% of the size of the captures (Domesday Duplicator `.s16`), against about 28% for FLAC. See the [specification](docs/Specifications/rfx-format.md)
 - **Pack, unpack, merge** - Pack captures into one `.rfx` file, unpack them bit for bit, merge several files into one, extract or remove captures, add some
 - **FLAC variant** - An ordinary Matroska audio file instead (a FLAC track per capture, 75 kHz for a 75 MHz capture), that any audio or video program opens; larger, as the captures do not predict each other
+- **Raw variant** - The same Matroska file with the samples stored as they are, as PCM (`pack --raw`): as large as the captures, nothing to decode, and any program opens it; rf-analyse and rf-packer read both variants; `merge`, `extract`, `remove` and `add` work on them too
 
 ### Reading and conversion
 - **ld-decode** - Reads an `.rfx` wherever it reads a capture: `ld-decode -i capture.rfx#2` decodes the track 2, `-i capture.rfx` stacks all its tracks. The sample rate is read from the file
@@ -27,7 +28,7 @@ these files directly. The sister project for what comes after the decoder is
 *The RF signal of every capture, without unpacking*
 - **rf-analyse** - A window in the style of ld-analyse and ld-stacker-gui for `.rfx` files and raw or FLAC captures, several at once (it asks for the format and the rate of the captures): the tracks as a list, the metadata of the selected one, the RF waveform with a bar to move, the spectrum and the statistics (mean amplitude, SNR, noise floor, effective bits) at the bar or over a zone, and the speed deviation of every track against its reference over the whole capture (0 is no TBC correction, above is faster, below slower). Only the segments on the screen are decoded. See [docs/rf-analyse.md](docs/rf-analyse.md)
 
-- **rf-packer** - A small window in the same style to make an `.rfx` file from captures, or to open one and change it: the tracks as a numbered list (add, remove, reorder), a codec choice (RFX, FLAC or raw files), the sample rate and bit depth of the list, an Info panel on the right with what is known of the selected track (name, rate, the date of the capture and of the file, the files that go with it) and a free note stored in its metadata, which can be edited or deleted. Processing asks for a copy or an overwrite. See [docs/rf-packer.md](docs/rf-packer.md)
+- **rf-packer** - A small window in the same style to make an `.rfx` file from captures, or to open one and change it: the tracks as a numbered list (add, remove, reorder), a codec choice (RFX, FLAC or raw: the variants of the format), the sample rate and bit depth of the list, an Info panel on the right with what is known of the selected track (name, rate, the date of the capture and of the file, the files that go with it) and a free note stored in its metadata, which can be edited or deleted. Processing asks for a copy or an overwrite. See [docs/rf-packer.md](docs/rf-packer.md)
 
 ## Using `rfx`
 
@@ -39,7 +40,7 @@ rfx unpack disc.rfx --only 2 -d out                    # one track
 rfx extract disc.rfx -o two.rfx --only 0,2             # editing: extract, remove, merge, add
 ```
 
-With several captures, `pack` needs the positions of the lines of each capture, which it finds itself, from the RF of each capture (the pass 0 of ld-decode, ported: `rfsync`, with the same positions to the bit; `--pal` for a PAL disc). `--ld-decode program` runs ld-decode for it instead, and `--pass0 dir` uses dumps already made. `pack --flac`,
+With several captures, `pack` needs the positions of the lines of each capture, which it finds itself, from the RF of each capture (the pass 0 of ld-decode, ported: `rfsync`, with the same positions to the bit; `--pal` for a PAL disc). `--ld-decode program` runs ld-decode for it instead, and `--pass0 dir` uses dumps already made. `pack --flac`, `pack --raw` (the samples as they are, in the same Matroska file),
 `unpack --as flac|ldf|mflac|<raw format>` and the FLAC variant need ffmpeg (or `FFMPEG=path`). `--device gpu` runs the predictor on an OpenCL GPU (`OpenCL.dll` or `libOpenCL.so.1` from the driver, loaded when used).
 
 ## Using `rf-requantize`

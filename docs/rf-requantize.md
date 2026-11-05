@@ -75,8 +75,8 @@ does) and **each track is requantised on its own**: the requantiser decides from
 that capture, so two captures of one disc may lose a different number of bits. `--only` takes
 some of the tracks.
 
-The output is coded again as the input was. The FLAC variant of `.rfx` stays the FLAC variant
-(its tracks are not predicted from each other, so it has no lag tables to keep, and needs no
+The output is coded again as the input was. The FLAC and the raw variants of `.rfx` stay what they were
+(their tracks are not predicted from each other, so it has no lag tables to keep, and needs no
 ld-decode either). For the predictor variant: Requantising changes the value of the samples, not
 their place, so the lines are where they were: the **lag tables are kept, not worked out
 again**, with the references, the weights, the predictor parameters, the segment length, the

@@ -62,7 +62,9 @@ public:
     // no sample.
     TrackReader(const QString &path, const CaptureSpec &spec);
 
-    bool isArchive() const { return m_archive != nullptr; }
+    // A predictor archive, or an .rfx file of the FLAC or raw variant (whose tracks have no reference: they are decoded by ffmpeg
+    // where they are looked at).
+    bool isArchive() const { return m_archive != nullptr || m_stored; }
     const QString &path() const { return m_path; }
     // The metadata of the tracks; for a raw capture one track made from what was
     // given and what was found (the name, the size, the samples, the shift, the rate).
@@ -71,7 +73,7 @@ public:
     // The size of the file, and the bytes the coded segments of track `k` take (the
     // file's size for a raw capture).
     uint64_t fileSize() const { return m_fileSize; }
-    uint64_t packedBytes(size_t k) const { return m_archive ? m_archive->packedBytes(k) : m_fileSize; }
+    uint64_t packedBytes(size_t k) const { return m_archive ? m_archive->packedBytes(k) : (m_stored ? m_fileSize / std::max<size_t>(1, m_meta.sources.size()) : m_fileSize); }
     // The lag table of track `k` against its reference `j`, or null.
     const LagTable *lagTable(size_t k, size_t j) const;
 
@@ -86,7 +88,8 @@ public:
     bool isCompressed() const { return m_compressed.has_value(); }
 
 private:
-    void readCompressed(int64_t start, size_t n, int32_t *out, bool keep);
+    void readStretches(size_t k, int64_t start, size_t n, int32_t *out, bool keep);
+    void readStored(size_t k, int64_t start, size_t n, int32_t *out, bool keep);
     using Segment = std::shared_ptr<const std::vector<int32_t>>;
     Segment segment(size_t k, uint64_t g);
 
@@ -118,7 +121,24 @@ private:
         uint64_t tick = 0;
     };
     std::optional<Compressed> m_compressed;
-    std::map<uint64_t, Stretch> m_stretches;
+    std::map<std::pair<size_t, uint64_t>, Stretch> m_stretches;
+    // An .rfx file of the FLAC or raw variant: its tracks are the audio of a Matroska file. The blocks of each track are indexed when the
+    // file is opened (the first sample of each, and where its payload is), so that any sample is read exactly, from the frames or the PCM
+    // that hold it, without the seeking of ffmpeg (which goes by timestamps of a millisecond).
+    bool m_stored = false;
+    struct StoredTrack
+    {
+        std::vector<uint64_t> first;
+        std::vector<uint64_t> offset;
+        std::vector<uint32_t> length;
+        // FLAC: "fLaC" and the STREAMINFO block (made the last metadata block), and the samples a frame holds; PCM: no header.
+        std::vector<uint8_t> header;
+        uint64_t frameSamples = 0;
+        bool pcm = false;
+    };
+    std::vector<StoredTrack> m_storedTracks;
+    void indexStored();
+    std::vector<int16_t> storedWindow(size_t k, uint64_t from, size_t count);
     std::map<std::pair<size_t, uint64_t>, Held> m_held;
     uint64_t m_tick = 0;
 };

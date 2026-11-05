@@ -17,9 +17,9 @@ Files can also be dropped on the window: an `.rfx` file opens, captures are adde
 | Part | What it does |
 | --- | --- |
 | **Create RFX…** / **Process…** | At the top. **Create RFX…** is what the button is called while the list is new (no archive opened): it writes the list. **Process…** is the same for an opened archive: it asks whether to **write a copy** or **overwrite** the file (overwriting is for RFX only) |
-| **RFX / FLAC / Raw** | Next to them: how the list is written. **RFX** uses the predictor (the smallest file; the tracks keep their notes and metadata). **FLAC** writes an `.rfx` file that audio programs open (larger, needs ffmpeg; the names, notes and files that go with the tracks are not kept). **Raw** writes the captures as files, with their `.yaml`, in a folder |
+| **RFX / FLAC / Raw** | Next to them: how the list is written. **RFX** uses the predictor (the smallest file; the tracks keep their notes and metadata). **FLAC** writes an `.rfx` file that audio programs open (larger, needs ffmpeg). **Raw** is the same Matroska file with the samples stored as they are, as 16-bit PCM (as large as the captures, nothing to decode, needs ffmpeg; the names, notes, rate, bits and files that go with the tracks are kept, as in the predictor variant). Both are the *variants* of the format that the specification (section 9) describes |
 | **Sample rate** and **Bit depth** | Above the list, for the whole list: what the samples contain. They are told once when the list is new (a capture's `.yaml` gives the rate), and are written in the metadata (`rate_hz`, `bits`). In an opened file they are shown and cannot be changed |
-| **Open RFX…** | Loads the tracks of an `.rfx` file into the list (it asks first if the list has changes that were not written) |
+| **Open RFX…** | Loads the tracks of an `.rfx` file into the list, of the predictor variant or of the FLAC or raw one (the codec menu then shows which, and choosing another converts the list: a file of the predictor is coded again) (it asks first if the list has changes that were not written) |
 | **Add track…** | Adds captures (`.s16 .r16 .s8 .r8 .lds .flac .ldf`) at the end of the list |
 | The list | A line per track with its number, as in the list of ld-stacker-gui: a bar of the colour of the track, its name, what it takes, and how it stands: *kept*, *edited* (only its metadata changes), *recode* (it is predicted from tracks that are no longer before it, so it is coded again by itself), *new* or *removed*. The arrows move it, the cross removes it (a track of the archive that is removed stays in the list, struck out, until the file is written, and can be kept again) |
 | **Info** | A panel on the right, which widens the window when it opens and narrows it when it closes (key `I`). It holds everything known of the selected track, and some of it can be changed |
@@ -41,7 +41,7 @@ they are: nothing is coded again.
 
 ## Writing
 
-**Create RFX…** and **Process…** ask for the file or folder (and, for an archive in RFX, a copy or an overwrite), the
+**Create RFX…** and **Process…** ask for the file (and, for an archive in RFX, a copy or an overwrite), the
 level of the predictor (1 to 4, for all the tracks), the device (processor or graphics card), the threads, whether every segment is decoded
 again and compared with its samples, and the rate of the captures that say none. When captures are added
 to other tracks, the lines of the captures are located first, from their RF, by the program itself (no ld-decode is needed): it is the pass 0 of ld-decode, ported to C++, and gives the same positions.

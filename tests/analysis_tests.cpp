@@ -13,6 +13,7 @@
 #include "error.h"
 #include "capture.h"
 #include "ffmpeg.h"
+#include "flacmode.h"
 #include "packer.h"
 #include "posfile.h"
 #include "rfsync.h"
@@ -630,6 +631,63 @@ void testRfSync()
     CHECK(rfx::locateFields(emptyReader, 0, fs, rfx::VideoSystem::Ntsc, 2).empty());
 }
 
+// The FLAC and the raw variant of an .rfx file are read where they are asked for, as the compressed capture is: the tracks come out
+// as the canonical samples of the format they were packed in.
+void testStoredReader()
+{
+    QTemporaryDir dir;
+    constexpr int64_t kSamples = 900000;
+    const auto expected = [](int64_t i) { return static_cast<int32_t>(i % 30011 - 15000); };
+    QByteArray s16(static_cast<qsizetype>(kSamples * 2), 0);
+    QByteArray r16(static_cast<qsizetype>(kSamples * 2), 0);
+    for (int64_t i = 0; i < kSamples; ++i) {
+        const int16_t v = static_cast<int16_t>(expected(i));
+        const uint16_t u = static_cast<uint16_t>(expected(i) + 32768);
+        std::memcpy(s16.data() + 2 * i, &v, 2);
+        std::memcpy(r16.data() + 2 * i, &u, 2);
+    }
+    writeFile(dir.filePath("a.ddd.s16"), s16);
+    writeFile(dir.filePath("b.ddd.r16"), r16);
+    rfx::PackOptions options;
+    options.rateMhz = 40.0;
+    options.threads = 2;
+    for (const rfx::StoredCodec codec : {rfx::StoredCodec::Raw, rfx::StoredCodec::Flac}) {
+        const QString file = dir.filePath(codec == rfx::StoredCodec::Raw ? "raw.rfx" : "flac.rfx");
+        try {
+            rfx::packFlac({dir.filePath("a.ddd.s16"), dir.filePath("b.ddd.r16")}, file, options, codec);
+        } catch (const rfx::Error &) {
+            std::puts("rf-analyse-tests: no ffmpeg, the reader of the FLAC and raw variants is not tested");
+            return;
+        }
+        rfx::TrackReader reader(file);
+        CHECK(reader.isArchive() && !reader.isCompressed());
+        CHECK(reader.trackCount() == 2);
+        CHECK(reader.meta().sources[0].words == static_cast<uint64_t>(kSamples));
+        CHECK(reader.meta().sources[1].fmt == "r16");
+        CHECK(reader.meta().sources[0].rateHz == 40e6);
+        CHECK(reader.lagTable(1, 0) == nullptr);
+        for (size_t k = 0; k < 2; ++k) {
+            const int32_t offset = k == 1 ? 32768 : 0;
+            for (const bool once : {false, true}) {
+                for (const int64_t start : {int64_t(-100), int64_t(0), int64_t(262140), int64_t(500000), kSamples - 50}) {
+                    const size_t n = 400;
+                    std::vector<int32_t> got(n, 12345);
+                    once ? reader.readOnce(k, start, n, got.data()) : reader.read(k, start, n, got.data());
+                    for (size_t i = 0; i < n; ++i) {
+                        const int64_t at = start + static_cast<int64_t>(i);
+                        const int32_t want = at >= 0 && at < kSamples ? expected(at) + offset : 0;
+                        if (got[i] != want) {
+                            std::fprintf(stderr, "stored read of track %zu from %lld: sample %zu is %d, not %d\n", k, static_cast<long long>(start), i, got[i], want);
+                            ++failures;
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 int main()
 
 
@@ -642,6 +700,7 @@ int main()
     testSidecarSections();
     testCompressedHeader();
     testCompressedReader();
+    testStoredReader();
     testRfSync();
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);

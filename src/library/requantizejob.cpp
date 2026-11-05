@@ -452,7 +452,10 @@ std::vector<RequantizeResult> runRequantize(const RequantizeJob &job)
                     break;
                 }
             }
-            packFlac(inputs, job.output, options);
+            // The variant of the input is kept: FLAC stays FLAC and raw stays raw.
+            std::string stored;
+            readFlacMeta(job.input, &stored);
+            packFlac(inputs, job.output, options, stored == "raw" ? StoredCodec::Raw : StoredCodec::Flac);
         } else {
             std::vector<size_t> places;
             for (const Track &t : tracks) {

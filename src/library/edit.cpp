@@ -13,6 +13,7 @@
 #include "archive.h"
 #include "capture.h"
 #include "error.h"
+#include "flacmode.h"
 #include "packer_internal.h"
 
 #include <QDir>
@@ -40,6 +41,12 @@ struct RemoveDirectory
     }
 };
 
+// The tracks of a file of any variant.
+size_t trackCount(const QString &path)
+{
+    return isFlacArchive(path) ? readFlacMeta(path).size() : Archive(path).meta().sources.size();
+}
+
 void checkTracks(const QString &archive, size_t tracks, const std::vector<size_t> &which)
 {
     for (const size_t i : which) {
@@ -56,6 +63,17 @@ void assembleArchives(const std::vector<QString> &archives, const std::vector<Pi
 {
     if (picks.empty()) {
         throw Error("nothing to write: no track selected");
+    }
+    // Files of the FLAC or raw variant have no references to keep or to lose: they are written again in the variant of the first, with
+    // what is asked changed.
+    if (std::any_of(archives.begin(), archives.end(), [](const QString &a) { return isFlacArchive(a); })) {
+        if (!std::all_of(archives.begin(), archives.end(), [](const QString &a) { return isFlacArchive(a); })) {
+            throw Error("files of the predictor and files of the FLAC or raw variant cannot be written together");
+        }
+        std::string stored;
+        readFlacMeta(archives.front(), &stored);
+        assembleStored(archives, picks, output, requested, stored == "raw" ? StoredCodec::Raw : StoredCodec::Flac);
+        return;
     }
     std::vector<std::unique_ptr<Archive>> opened;
     for (const QString &p : archives) {
@@ -224,7 +242,7 @@ void assembleArchives(const std::vector<QString> &archives, const std::vector<Pi
 
 std::vector<Pick> pickSome(const QString &archive, const std::vector<size_t> &which)
 {
-    const size_t n = Archive(archive).meta().sources.size();
+    const size_t n = trackCount(archive);
     checkTracks(archive, n, which);
     const std::set<size_t> set(which.begin(), which.end());
     std::vector<Pick> picks;
@@ -238,7 +256,7 @@ std::vector<Pick> pickSome(const QString &archive, const std::vector<size_t> &wh
 
 std::vector<Pick> pickWithout(const QString &archive, const std::vector<size_t> &which)
 {
-    const size_t n = Archive(archive).meta().sources.size();
+    const size_t n = trackCount(archive);
     checkTracks(archive, n, which);
     const std::set<size_t> set(which.begin(), which.end());
     std::vector<Pick> picks;
@@ -254,7 +272,7 @@ std::vector<Pick> pickAll(const std::vector<QString> &archives)
 {
     std::vector<Pick> picks;
     for (size_t arch = 0; arch < archives.size(); ++arch) {
-        const size_t n = Archive(archives[arch]).meta().sources.size();
+        const size_t n = trackCount(archives[arch]);
         for (size_t src = 0; src < n; ++src) {
             picks.push_back(Pick::old(arch, src));
         }

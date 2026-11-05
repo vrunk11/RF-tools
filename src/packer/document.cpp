@@ -13,6 +13,7 @@
 #include "archive.h"
 #include "capture.h"
 #include "error.h"
+#include "flacmode.h"
 #include "sampleformat.h"
 
 #include <QDir>
@@ -46,14 +47,24 @@ bool sameSidecars(const std::vector<rfx::Sidecar> &a, const std::vector<rfx::Sid
 bool Document::open(const QString &path, QString *error)
 {
     try {
-        rfx::Archive archive(path);
+        // A predictor archive, or an .rfx file of the FLAC or raw variant (its tracks take their share of the file).
+        const bool stored = rfx::isFlacArchive(path);
+        std::string storedCodec;
+        std::optional<rfx::Archive> archive;
+        std::vector<rfx::SourceMeta> sources;
+        if (stored) {
+            sources = rfx::readFlacMeta(path, &storedCodec);
+        } else {
+            archive.emplace(path);
+            sources = archive->meta().sources;
+        }
         std::vector<Entry> entries;
-        for (size_t k = 0; k < archive.meta().sources.size(); ++k) {
+        for (size_t k = 0; k < sources.size(); ++k) {
             Entry e;
             e.fromArchive = true;
             e.src = k;
-            e.meta = archive.meta().sources[k];
-            e.packed = archive.packedBytes(k);
+            e.meta = sources[k];
+            e.packed = stored ? static_cast<uint64_t>(QFileInfo(path).size()) / std::max<size_t>(1, sources.size()) : archive->packedBytes(k);
             e.name = QString::fromStdString(e.meta.name);
             e.rateHz = e.meta.rateHz;
             e.notes = QString::fromStdString(e.meta.notes);
@@ -62,7 +73,7 @@ bool Document::open(const QString &path, QString *error)
         }
         m_entries = std::move(entries);
         m_archive = path;
-        m_codec = Codec::Rfx;
+        m_codec = stored ? (storedCodec == "raw" ? Codec::Raw : Codec::Flac) : Codec::Rfx;
         m_rateHz = m_entries.empty() ? 0.0 : m_entries.front().meta.rateHz;
         m_bits = m_entries.empty() ? 0 : static_cast<int>(m_entries.front().meta.bits);
         m_touched = false;

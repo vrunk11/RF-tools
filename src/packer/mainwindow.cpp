@@ -110,7 +110,7 @@ MainWindow::MainWindow()
     m_codec->addItem(tr("RFX"), static_cast<int>(Codec::Rfx));
     m_codec->addItem(tr("FLAC"), static_cast<int>(Codec::Flac));
     m_codec->addItem(tr("Raw"), static_cast<int>(Codec::Raw));
-    m_codec->setToolTip(tr("How the list is written: RFX (the predictor, smallest), FLAC (an .rfx file that audio programs open, larger), or raw captures in a folder"));
+    m_codec->setToolTip(tr("How the list is written: RFX (the predictor, smallest), FLAC (an .rfx file that audio programs open, larger), or Raw (the same file with the samples as they are, largest)"));
     top->addWidget(m_codec);
     leftLayout->addLayout(top);
 

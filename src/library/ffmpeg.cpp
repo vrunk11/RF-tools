@@ -266,7 +266,7 @@ std::optional<uint64_t> flacSamplesFromTail(const QString &path, const FlacInfo 
     return std::nullopt;
 }
 
-std::vector<int16_t> decodeWindow(const QString &path, double headerRate, uint64_t start, size_t count)
+std::vector<int16_t> decodeWindow(const QString &path, double headerRate, uint64_t start, size_t count, int audioStream)
 {
     // -ss before -i jumps to the mark before the place and the decoder goes on to it sample by sample: the window is exact.
     // A little more than asked for is decoded, and cut.
@@ -274,8 +274,9 @@ std::vector<int16_t> decodeWindow(const QString &path, double headerRate, uint64
     QByteArray bytes;
     bytes.reserve(static_cast<qsizetype>(count * 2 + 8));
     streamFfmpegOutput({QStringLiteral("-v"), QStringLiteral("error"), QStringLiteral("-nostdin"), QStringLiteral("-ss"), seconds(static_cast<double>(start)),
-                        QStringLiteral("-i"), path, QStringLiteral("-t"), seconds(static_cast<double>(count) + 2.0), QStringLiteral("-f"), QStringLiteral("s16le"),
-                        QStringLiteral("-acodec"), QStringLiteral("pcm_s16le"), QStringLiteral("-")},
+                        QStringLiteral("-i"), path, QStringLiteral("-map"), audioStream >= 0 ? QStringLiteral("0:a:%1").arg(audioStream) : QStringLiteral("0:a:0"),
+                        QStringLiteral("-t"), seconds(static_cast<double>(count) + 2.0), QStringLiteral("-f"), QStringLiteral("s16le"), QStringLiteral("-acodec"),
+                        QStringLiteral("pcm_s16le"), QStringLiteral("-")},
                        [&bytes](const char *data, size_t n) { bytes.append(data, static_cast<qsizetype>(n)); }, "ffmpeg could not decode " + path.toStdString());
     const size_t got = std::min<size_t>(count, static_cast<size_t>(bytes.size()) / 2);
     std::vector<int16_t> out(got);

@@ -163,17 +163,27 @@ std::vector<QString> listAsFiles(const Job &job, const QString &work)
 {
     std::vector<QString> files;
     std::optional<rfx::Archive> archive;
+    std::vector<rfx::SourceMeta> stored;
+    const bool storedVariant = !job.archive.isEmpty() && rfx::isFlacArchive(job.archive);
     for (size_t k = 0; k < job.picks.size(); ++k) {
         const rfx::Pick &p = job.picks[k];
         if (!p.fromArchive) {
             files.push_back(p.capture);
             continue;
         }
+        const QString dir = work + QStringLiteral("/") + QString::number(k);
+        QDir().mkpath(dir);
+        if (storedVariant) {
+            if (stored.empty()) {
+                stored = rfx::readFlacMeta(job.archive);
+            }
+            rfx::unpackFlac(job.archive, dir, p.src, std::nullopt);
+            files.push_back(dir + QStringLiteral("/") + QString::fromStdString(stored[p.src].name));
+            continue;
+        }
         if (!archive) {
             archive.emplace(job.archive);
         }
-        const QString dir = work + QStringLiteral("/") + QString::number(k);
-        QDir().mkpath(dir);
         rfx::UnpackOptions unpack;
         unpack.only = p.src;
         unpack.device = job.options.device;
@@ -191,6 +201,23 @@ void runJob(const Job &job)
     if (job.picks.empty()) {
         throw rfx::Error("nothing to write: the list has no track");
     }
+    if (job.codec == Codec::Rfx && !job.archive.isEmpty() && rfx::isFlacArchive(job.archive)) {
+        // From a FLAC or raw file to the predictor: the tracks come out as captures, which are coded as new ones (the lines are located again).
+        const QString work = rfx::withExtension(job.output, QStringLiteral("work"));
+        QDir(work).removeRecursively();
+        const std::vector<QString> files = listAsFiles(job, work);
+        std::vector<rfx::Pick> picks;
+        for (size_t k = 0; k < job.picks.size(); ++k) {
+            rfx::Pick p = rfx::Pick::fresh(files[k]);
+            p.edit.rateHz = job.picks[k].edit.rateHz;
+            p.edit.notes = job.picks[k].edit.notes;
+            p.edit.bits = job.picks[k].edit.bits;
+            picks.push_back(std::move(p));
+        }
+        rfx::assembleArchives({}, picks, job.output, job.options, std::nullopt);
+        QDir(work).removeRecursively();
+        return;
+    }
     if (job.codec == Codec::Rfx) {
         std::vector<QString> archives;
         if (!job.archive.isEmpty()) {
@@ -199,52 +226,12 @@ void runJob(const Job &job)
         rfx::assembleArchives(archives, job.picks, job.output, job.options, std::nullopt);
         return;
     }
-    if (job.codec == Codec::Flac) {
-        const QString work = rfx::withExtension(job.output, QStringLiteral("work"));
-        QDir(work).removeRecursively();
-        rfx::PackOptions options = job.options;
-        options.order = rfx::OrderMode::Given;
-        // The rate of the list (FLAC says it in its header); the captures are in the order they have in the list.
-        for (const rfx::Pick &p : job.picks) {
-            if (p.edit.rateHz && *p.edit.rateHz > 0) {
-                options.rateMhz = *p.edit.rateHz / 1e6;
-                break;
-            }
-        }
-        const std::vector<QString> files = listAsFiles(job, work);
-        rfx::packFlac(files, job.output, options);
-        QDir(work).removeRecursively();
-        return;
+    // The FLAC or the raw variant: the tracks are unpacked and written again, with the name, rate, note, files and bits the list says.
+    std::vector<QString> archives;
+    if (!job.archive.isEmpty()) {
+        archives.push_back(job.archive);
     }
-    // Raw captures, in a folder: each with its .yaml, named as it was.
-    QDir().mkpath(job.output);
-    for (const rfx::Pick &p : job.picks) {
-        if (p.fromArchive) {
-            rfx::UnpackOptions unpack;
-            unpack.only = p.src;
-            unpack.device = job.options.device;
-            unpack.threads = job.options.threads;
-            // Into a folder of its own first: unpacking one track may clear what an earlier one left in the folder.
-            const QString staging = rfx::withExtension(job.output, QStringLiteral("work")) + QStringLiteral("/") + QString::number(p.src);
-            QDir(staging).removeRecursively();
-            QDir().mkpath(staging);
-            rfx::unpackArchive(job.archive, staging, unpack);
-            for (const QFileInfo &f : QDir(staging).entryInfoList(QDir::Files)) {
-                const QString target = job.output + QStringLiteral("/") + f.fileName();
-                QFile::remove(target);
-                if (!QFile::rename(f.absoluteFilePath(), target)) {
-                    throw rfx::Error("cannot move " + f.fileName().toStdString() + " to " + job.output.toStdString());
-                }
-            }
-            QDir(rfx::withExtension(job.output, QStringLiteral("work"))).removeRecursively();
-        } else {
-            const QString target = job.output + QStringLiteral("/") + QFileInfo(p.capture).fileName();
-            QFile::remove(target);
-            if (!QFile::copy(p.capture, target)) {
-                throw rfx::Error("cannot copy " + p.capture.toStdString() + " to " + target.toStdString());
-            }
-        }
-    }
+    rfx::assembleStored(archives, job.picks, job.output, job.options, job.codec == Codec::Raw ? rfx::StoredCodec::Raw : rfx::StoredCodec::Flac);
 }
 
 void removeJobLeftovers(const QString &output)

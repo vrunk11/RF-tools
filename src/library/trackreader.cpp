@@ -12,13 +12,20 @@
 #include "trackreader.h"
 
 #include "capture.h"
+#include "convert.h"
+#include "ebml.h"
 #include "error.h"
 #include "ffmpeg.h"
+#include "flacmode.h"
 #include "segment.h"
 
+#include <QDir>
 #include <QFileInfo>
+#include <QTemporaryFile>
 
 #include <algorithm>
+#include <cmath>
+#include <cstring>
 
 namespace rfx {
 
@@ -48,11 +55,23 @@ uint32_t shiftForBits(SampleFormat format, int bits)
 TrackReader::TrackReader(const QString &path)
     : m_path(path)
     , m_fileSize(static_cast<uint64_t>(QFileInfo(path).size()))
-    , m_archive(std::make_unique<Archive>(path))
-    , m_meta(m_archive->meta())
+    , m_stored(isFlacArchive(path))
 {
+    if (m_stored) {
+        // The FLAC or raw variant: the metadata of its tracks are in rfx.json, and there is nothing to decode but the audio.
+        m_meta.segment = kCaptureSegment;
+        m_meta.sources = readFlacMeta(path);
+        m_file = std::make_unique<PosFile>(path, PosFile::Mode::Read);
+        indexStored();
+    } else {
+        m_archive = std::make_unique<Archive>(path);
+        m_meta = m_archive->meta();
+    }
     if (m_meta.sources.empty()) {
         throw Error(path.toStdString() + " holds no track");
+    }
+    if (m_stored) {
+        return;
     }
     m_windows = std::make_unique<ReferenceWindows>([this](size_t track, int64_t start, int32_t *out, size_t n) { read(track, start, n, out); }, m_meta,
                                                    m_archive->tables());
@@ -111,7 +130,7 @@ TrackReader::TrackReader(const QString &path, const CaptureSpec &spec)
         for (uint64_t at = 0; at < scanned; at += kScanChunk) {
             const size_t n = static_cast<size_t>(std::min<uint64_t>(kScanChunk, scanned - at));
             if (m_compressed) {
-                readCompressed(static_cast<int64_t>(at), n, chunk.data(), false);
+                readStretches(0, static_cast<int64_t>(at), n, chunk.data(), false);
             } else {
                 loadSamples(spec.format, *m_file, sm.words, static_cast<int64_t>(at), chunk.data(), n);
             }
@@ -192,8 +211,12 @@ TrackReader::Segment TrackReader::segment(size_t k, uint64_t g)
 void TrackReader::read(size_t k, int64_t start, size_t n, int32_t *out)
 {
     const SourceMeta &sm = m_meta.sources[k];
+    if (m_stored) {
+        readStored(k, start, n, out, true);
+        return;
+    }
     if (m_compressed) {
-        readCompressed(start, n, out, true);
+        readStretches(0, start, n, out, true);
         return;
     }
     if (!m_archive) {
@@ -221,16 +244,148 @@ void TrackReader::read(size_t k, int64_t start, size_t n, int32_t *out)
 
 void TrackReader::readOnce(size_t k, int64_t start, size_t n, int32_t *out)
 {
+    if (m_stored) {
+        readStored(k, start, n, out, false);
+        return;
+    }
     if (m_compressed) {
-        readCompressed(start, n, out, false);
+        readStretches(0, start, n, out, false);
         return;
     }
     read(k, start, n, out);
 }
 
-// The samples of a compressed capture, from the stretches that are held, and from ffmpeg for those that are not.
-void TrackReader::readCompressed(int64_t start, size_t n, int32_t *out, bool keep)
+// Where the samples of each track of a FLAC or raw variant are: the blocks of every track, in order, each holding one FLAC frame
+// (which holds a fixed number of samples) or some PCM samples (specification 9).
+void TrackReader::indexStored()
 {
+    const ebml::Index idx = ebml::scan(*m_file, std::nullopt);
+    // The audio tracks, in the order of their numbers, are the tracks of the archive.
+    std::vector<std::pair<uint64_t, std::string>> codecs = idx.codecs;
+    std::sort(codecs.begin(), codecs.end());
+    if (codecs.size() != m_meta.sources.size()) {
+        throw Error(m_path.toStdString() + ": " + std::to_string(codecs.size()) + " audio tracks, " + std::to_string(m_meta.sources.size()) + " in rfx.json");
+    }
+    m_storedTracks.assign(codecs.size(), StoredTrack());
+    for (size_t k = 0; k < codecs.size(); ++k) {
+        StoredTrack &t = m_storedTracks[k];
+        t.pcm = codecs[k].second == "A_PCM/INT/LIT";
+        if (!t.pcm && codecs[k].second != "A_FLAC") {
+            throw Error(m_path.toStdString() + ": track " + std::to_string(k) + " is " + codecs[k].second + ", not FLAC or PCM");
+        }
+        if (!t.pcm) {
+            for (const auto &p : idx.codecPrivate) {
+                if (p.first == codecs[k].first) {
+                    t.header = p.second;
+                }
+            }
+            // "fLaC" and the STREAMINFO block, which is the last one: the minimum and maximum block sizes are the 16 bits after its header.
+            if (t.header.size() < 4 || std::memcmp(t.header.data(), "fLaC", 4) != 0) {
+                t.header.insert(t.header.begin(), {'f', 'L', 'a', 'C'});
+            }
+            if (t.header.size() < 4 + 4 + 34) {
+                throw Error(m_path.toStdString() + ": the FLAC stream header of track " + std::to_string(k) + " is damaged");
+            }
+            t.header[4] |= 0x80;
+            const uint64_t minBlock = (uint64_t(t.header[8]) << 8) | t.header[9];
+            const uint64_t maxBlock = (uint64_t(t.header[10]) << 8) | t.header[11];
+            if (minBlock != maxBlock || minBlock == 0) {
+                throw Error(m_path.toStdString() + ": the frames of track " + std::to_string(k) + " do not have a fixed size");
+            }
+            t.frameSamples = minBlock;
+        }
+        uint64_t samples = 0;
+        for (const ebml::BlockRef &b : idx.blocks) {
+            if (b.track != codecs[k].first) {
+                continue;
+            }
+            t.first.push_back(samples);
+            t.offset.push_back(b.off);
+            t.length.push_back(static_cast<uint32_t>(b.len));
+            samples += t.pcm ? b.len / 2 : t.frameSamples;
+        }
+    }
+}
+
+// `count` samples of a track from sample `from`, as the 16-bit values the stream holds, exactly: PCM is read where it is; FLAC frames
+// are put one after the other behind the stream header in a file of their own and decoded by ffmpeg, starting at a frame, so that
+// no seek is needed. Fewer come back past the end.
+std::vector<int16_t> TrackReader::storedWindow(size_t k, uint64_t from, size_t count)
+{
+    const StoredTrack &t = m_storedTracks[k];
+    const uint64_t words = m_meta.sources[k].words;
+    if (from >= words || count == 0 || t.first.empty()) {
+        return {};
+    }
+    count = static_cast<size_t>(std::min<uint64_t>(count, words - from));
+    // The block that holds `from`.
+    size_t b = static_cast<size_t>(std::upper_bound(t.first.begin(), t.first.end(), from) - t.first.begin()) - 1;
+    if (t.pcm) {
+        std::vector<int16_t> out;
+        out.reserve(count);
+        std::vector<uint8_t> buf;
+        uint64_t at = from;
+        for (; out.size() < count && b < t.first.size(); ++b) {
+            const uint64_t skip = at - t.first[b];
+            const uint64_t have = t.length[b] / 2 - skip;
+            const size_t take = static_cast<size_t>(std::min<uint64_t>(have, count - out.size()));
+            buf.resize(take * 2);
+            m_file->readAt(buf.data(), buf.size(), t.offset[b] + skip * 2);
+            for (size_t i = 0; i < take; ++i) {
+                out.push_back(static_cast<int16_t>(buf[2 * i] | (buf[2 * i + 1] << 8)));
+            }
+            at += take;
+        }
+        return out;
+    }
+    const size_t last = static_cast<size_t>(std::upper_bound(t.first.begin(), t.first.end(), from + count - 1) - t.first.begin()) - 1;
+    QTemporaryFile frames(QDir::tempPath() + QStringLiteral("/rfx-frames-XXXXXX.flac"));
+    if (!frames.open()) {
+        throw Error("cannot write a temporary file for the FLAC frames");
+    }
+    frames.write(reinterpret_cast<const char *>(t.header.data()), static_cast<qint64>(t.header.size()));
+    std::vector<uint8_t> buf;
+    for (size_t i = b; i <= last; ++i) {
+        buf.resize(t.length[i]);
+        m_file->readAt(buf.data(), buf.size(), t.offset[i]);
+        frames.write(reinterpret_cast<const char *>(buf.data()), static_cast<qint64>(buf.size()));
+    }
+    frames.flush();
+    QByteArray bytes;
+    streamFfmpegOutput({QStringLiteral("-v"), QStringLiteral("error"), QStringLiteral("-nostdin"), QStringLiteral("-i"), frames.fileName(), QStringLiteral("-f"),
+                        QStringLiteral("s16le"), QStringLiteral("-acodec"), QStringLiteral("pcm_s16le"), QStringLiteral("-")},
+                       [&bytes](const char *data, size_t n) { bytes.append(data, static_cast<qsizetype>(n)); }, "ffmpeg could not decode the frames of " + m_path.toStdString());
+    const size_t lead = static_cast<size_t>(from - t.first[b]);
+    std::vector<int16_t> out;
+    for (size_t i = lead; i < static_cast<size_t>(bytes.size()) / 2 && out.size() < count; ++i) {
+        out.push_back(static_cast<int16_t>(static_cast<uint8_t>(bytes[static_cast<qsizetype>(2 * i)]) | (static_cast<uint8_t>(bytes[static_cast<qsizetype>(2 * i + 1)]) << 8)));
+    }
+    return out;
+}
+
+// A track of the FLAC or raw variant: its 16-bit samples, as ffmpeg decodes them, are turned into the canonical samples of the format the
+// capture had (specification 9).
+void TrackReader::readStored(size_t k, int64_t start, size_t n, int32_t *out, bool keep)
+{
+    readStretches(k, start, n, out, keep);
+    const SourceMeta &sm = m_meta.sources[k];
+    const SampleFormat format = sm.format();
+    const int64_t from = std::max<int64_t>(start, 0);
+    const int64_t to = std::min<int64_t>(start + static_cast<int64_t>(n), static_cast<int64_t>(sm.words));
+    for (int64_t p = from; p < to; ++p) {
+        out[p - start] = fromI16(format, static_cast<int16_t>(out[p - start]));
+    }
+}
+
+// The samples of a compressed capture or of a track of the FLAC or raw variant of an .rfx file, from the stretches that are held, and
+// from ffmpeg for those that are not.
+void TrackReader::readStretches(size_t k, int64_t start, size_t n, int32_t *out, bool keep)
+{
+    // Where the samples are, and how many: one capture, whose header gives its rate, or a track of the variants, a stream of its file.
+    const SourceMeta &sm = m_meta.sources[k];
+    const double streamRate = m_compressed ? m_compressed->headerRate : std::max(1.0, std::round((sm.rateHz > 0 ? sm.rateHz : 75e6) / 1000.0));
+    const uint64_t samples = m_compressed ? m_compressed->samples : sm.words;
+    const auto decode = [&](uint64_t from, size_t count) { return m_stored ? storedWindow(k, from, count) : decodeWindow(m_path, streamRate, from, count); };
     constexpr uint64_t kStretch = uint64_t(1) << 18;
     // What a run of missing stretches may be, in one call of ffmpeg.
     constexpr uint64_t kMostPerCall = 8;
@@ -238,7 +393,7 @@ void TrackReader::readCompressed(int64_t start, size_t n, int32_t *out, bool kee
     constexpr size_t kMostHeld = 200;
 
     std::fill(out, out + n, 0);
-    const int64_t total = static_cast<int64_t>(m_compressed->samples);
+    const int64_t total = static_cast<int64_t>(samples);
     const int64_t from = std::max<int64_t>(start, 0);
     const int64_t to = std::min<int64_t>(start + static_cast<int64_t>(n), total);
     if (to <= from) {
@@ -252,10 +407,10 @@ void TrackReader::readCompressed(int64_t start, size_t n, int32_t *out, bool kee
         // Just the range, decoded for this question alone, unless what is held covers it.
         bool covered = true;
         for (uint64_t c = first; c <= last && covered; ++c) {
-            covered = m_stretches.count(c) != 0;
+            covered = m_stretches.count({k, c}) != 0;
         }
         if (!covered) {
-            const std::vector<int16_t> own = decodeWindow(m_path, m_compressed->headerRate, static_cast<uint64_t>(from), static_cast<size_t>(to - from));
+            const std::vector<int16_t> own = decode(static_cast<uint64_t>(from), static_cast<size_t>(to - from));
             for (size_t i = 0; i < own.size(); ++i) {
                 out[from - start + static_cast<int64_t>(i)] = own[i];
             }
@@ -265,30 +420,30 @@ void TrackReader::readCompressed(int64_t start, size_t n, int32_t *out, bool kee
 
     // Decode the stretches that are missing, a run of them in one call.
     for (uint64_t c = first; c <= last;) {
-        if (m_stretches.count(c) != 0) {
+        if (m_stretches.count({k, c}) != 0) {
             ++c;
             continue;
         }
         uint64_t end = c;
-        while (end <= last && end - c < kMostPerCall && m_stretches.count(end) == 0) {
+        while (end <= last && end - c < kMostPerCall && m_stretches.count({k, end}) == 0) {
             ++end;
         }
-        const uint64_t samples = std::min<uint64_t>((end - c) * kStretch, m_compressed->samples - c * kStretch);
-        const std::vector<int16_t> run = decodeWindow(m_path, m_compressed->headerRate, c * kStretch, static_cast<size_t>(samples));
+        const uint64_t run_samples = std::min<uint64_t>((end - c) * kStretch, samples - c * kStretch);
+        const std::vector<int16_t> run = decode(c * kStretch, static_cast<size_t>(run_samples));
         for (uint64_t s = c; s < end; ++s) {
             const size_t lo = static_cast<size_t>((s - c) * kStretch);
             if (lo >= run.size()) {
                 // (the file holds less than it said: what is not there is zero)
-                m_stretches[s] = Stretch{std::make_shared<const std::vector<int16_t>>(), ++m_tick};
+                m_stretches[{k, s}] = Stretch{std::make_shared<const std::vector<int16_t>>(), ++m_tick};
                 continue;
             }
             const size_t hi = std::min<size_t>(run.size(), lo + static_cast<size_t>(kStretch));
-            m_stretches[s] = Stretch{std::make_shared<const std::vector<int16_t>>(run.begin() + static_cast<std::ptrdiff_t>(lo), run.begin() + static_cast<std::ptrdiff_t>(hi)), ++m_tick};
+            m_stretches[{k, s}] = Stretch{std::make_shared<const std::vector<int16_t>>(run.begin() + static_cast<std::ptrdiff_t>(lo), run.begin() + static_cast<std::ptrdiff_t>(hi)), ++m_tick};
         }
         c = end;
     }
     for (uint64_t c = first; c <= last; ++c) {
-        Stretch &st = m_stretches[c];
+        Stretch &st = m_stretches[{k, c}];
         st.tick = ++m_tick;
         const int64_t base = static_cast<int64_t>(c * kStretch);
         const int64_t lo = std::max<int64_t>(from, base);

@@ -14,6 +14,7 @@
 #include "capture.h"
 #include "error.h"
 #include "ffmpeg.h"
+#include "flacmode.h"
 
 #include <QCryptographicHash>
 #include <QDir>
@@ -171,10 +172,12 @@ void encodeFlacFile(const QString &src, const SourceMeta &sm, bool ogg, const QS
 
 void exportMultichannelFlac(const QString &archivePath, const QString &outdir, std::optional<size_t> only)
 {
+    // A file of the predictor variant, or of the FLAC or raw one.
+    const bool stored = isFlacArchive(archivePath);
+    const std::vector<SourceMeta> metas = stored ? readFlacMeta(archivePath) : Archive(archivePath).meta().sources;
     std::vector<size_t> tracks;
     {
-        Archive a(archivePath);
-        const size_t n = a.meta().sources.size();
+        const size_t n = metas.size();
         if (only && *only >= n) {
             throw Error(archivePath.toStdString() + " has " + std::to_string(n) + " tracks: no track " + std::to_string(*only));
         }
@@ -195,10 +198,13 @@ void exportMultichannelFlac(const QString &archivePath, const QString &outdir, s
         QString path;
         ~RemoveWork() { QDir(path).removeRecursively(); }
     } cleanup{workPath};
-    unpackArchive(archivePath, workPath, UnpackOptions());
-    Archive a(archivePath);
+    if (stored) {
+        unpackFlac(archivePath, workPath, std::nullopt, std::nullopt);
+    } else {
+        unpackArchive(archivePath, workPath, UnpackOptions());
+    }
     std::vector<std::unique_ptr<PosFile>> files;
-    for (const SourceMeta &sm : a.meta().sources) {
+    for (const SourceMeta &sm : metas) {
         files.push_back(std::make_unique<PosFile>(QDir(workPath).filePath(QFileInfo(QString::fromStdString(sm.name)).fileName()), PosFile::Mode::Read));
     }
     const size_t groups = (tracks.size() + kFlacChannels - 1) / kFlacChannels;
@@ -209,10 +215,10 @@ void exportMultichannelFlac(const QString &archivePath, const QString &outdir, s
             ? stem + QStringLiteral(".flac")
             : QStringLiteral("%1_%2-%3.flac").arg(stem).arg(static_cast<qulonglong>(group.front())).arg(static_cast<qulonglong>(group.back()));
         const QString dst = QDir(outdir).filePath(name);
-        const double rate = a.meta().sources[group.front()].rateHz;
+        const double rate = metas[group.front()].rateHz;
         const QString rateArg = rateArgument(rate, kUnknownRateKhz);
         for (const size_t k : group) {
-            if (std::fabs(a.meta().sources[k].rateHz - rate) > 1.0) {
+            if (std::fabs(metas[k].rateHz - rate) > 1.0) {
                 std::fprintf(stderr, "%s: the tracks were not captured at one rate; the file says %s Hz (track %zu)\n",
                              name.toStdString().c_str(), rateArg.toStdString().c_str(), group.front());
                 break;
@@ -226,7 +232,7 @@ void exportMultichannelFlac(const QString &archivePath, const QString &outdir, s
         }
         uint64_t frames = 0;
         for (const size_t k : group) {
-            frames = std::max(frames, a.meta().sources[k].words);
+            frames = std::max(frames, metas[k].words);
         }
         QCryptographicHash sent(QCryptographicHash::Sha256);
         std::vector<std::vector<int32_t>> bufs(group.size(), std::vector<int32_t>(kFrames));
@@ -234,13 +240,13 @@ void exportMultichannelFlac(const QString &archivePath, const QString &outdir, s
         for (uint64_t at = 0; at < frames;) {
             const size_t n = static_cast<size_t>(std::min<uint64_t>(frames - at, kFrames));
             for (size_t c = 0; c < group.size(); ++c) {
-                const SourceMeta &sm = a.meta().sources[group[c]];
+                const SourceMeta &sm = metas[group[c]];
                 loadSamples(sm.format(), *files[group[c]], sm.words, static_cast<int64_t>(at), bufs[c].data(), n);
             }
             bytes.clear();
             for (size_t i = 0; i < n; ++i) {
                 for (size_t c = 0; c < group.size(); ++c) {
-                    const SourceMeta &sm = a.meta().sources[group[c]];
+                    const SourceMeta &sm = metas[group[c]];
                     int16_t s = 0;
                     if (at + i < sm.words && !toI16(sm.format(), bufs[c][i], s)) {
                         throw Error("track " + std::to_string(group[c]) + ": a sample does not fit 16 bits");
@@ -278,7 +284,7 @@ void exportMultichannelFlac(const QString &archivePath, const QString &outdir, s
         }
         std::string list;
         for (const size_t k : group) {
-            list += (list.empty() ? "" : ", ") + std::to_string(k) + ": " + a.meta().sources[k].name;
+            list += (list.empty() ? "" : ", ") + std::to_string(k) + ": " + metas[k].name;
         }
         std::printf("%s  %s Hz, %zu channels, %llu frames  [%s]\n", QDir::toNativeSeparators(dst).toStdString().c_str(),
                     rateArg.toStdString().c_str(), group.size(), static_cast<unsigned long long>(frames), list.c_str());

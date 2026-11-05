@@ -155,13 +155,10 @@ int runUnpack(const QStringList &args)
         } else {
             rfx::unpackMetadata(path, dir, options.only);
         }
-    } else if (flac) {
-        if (options.target && options.target->kind == rfx::OutputFormat::Kind::MultichannelFlac) {
-            throw rfx::Error("--as: unknown format mflac for a FLAC-mode archive");
-        }
-        rfx::unpackFlac(path, dir, options.only, options.target);
     } else if (options.target && options.target->kind == rfx::OutputFormat::Kind::MultichannelFlac) {
         rfx::exportMultichannelFlac(path, dir, options.only);
+    } else if (flac) {
+        rfx::unpackFlac(path, dir, options.only, options.target);
     } else {
         rfx::unpackArchive(path, dir, options);
     }
@@ -185,8 +182,9 @@ int runPack(const QStringList &args)
     const QCommandLineOption device("device", "Where the predictor runs: cpu or gpu (OpenCL, the same bits).", "device", "cpu");
     const QCommandLineOption order("order", "Order of coding: auto puts the cleanest capture of each programme first, given keeps the command line order.", "order", "auto");
     const QCommandLineOption flac("flac", "Code the tracks as FLAC instead of with the predictor: the file is then an ordinary Matroska audio file (a FLAC track per capture) that audio programs open, several times larger; unpack gives the captures back all the same.");
+    const QCommandLineOption rawOption("raw", "Store the samples as they are instead of coding them: the file is then an ordinary Matroska audio file (a raw PCM track per capture) that audio programs open, as large as the captures; unpack gives the captures back all the same.");
     const QCommandLineOption threads("threads", "Threads coding segments (default: one per processor).", "n");
-    for (const QCommandLineOption *o : {&output, &level, &segment, &noVerify, &pass0, &ldDecode, &palOption, &rateMhz, &format, &device, &order, &flac, &threads}) {
+    for (const QCommandLineOption *o : {&output, &level, &segment, &noVerify, &pass0, &ldDecode, &palOption, &rateMhz, &format, &device, &order, &flac, &rawOption, &threads}) {
         parser.addOption(*o);
     }
     parser.addPositionalArgument("captures", "The captures to pack.", "<capture>...");
@@ -244,6 +242,13 @@ int runPack(const QStringList &args)
     std::vector<QString> inputs;
     for (const QString &p : parser.positionalArguments()) {
         inputs.push_back(p);
+    }
+    if (parser.isSet(flac) && parser.isSet(rawOption)) {
+        return usageError("--flac and --raw cannot be given together");
+    }
+    if (parser.isSet(rawOption)) {
+        rfx::packFlac(inputs, parser.value(output), options, rfx::StoredCodec::Raw);
+        return kExitOk;
     }
     if (parser.isSet(flac)) {
         rfx::packFlac(inputs, parser.value(output), options);

@@ -10,6 +10,7 @@
 
 #include "flacmode.h"
 
+#include "archive.h"
 #include "capture.h"
 #include "ebml.h"
 #include "error.h"
@@ -127,7 +128,7 @@ bool isFlacArchive(const QString &path)
     return head.contains("matroska");
 }
 
-std::vector<SourceMeta> readFlacMeta(const QString &path)
+std::vector<SourceMeta> readFlacMeta(const QString &path, std::string *codec)
 {
     PosFile file(path, PosFile::Mode::Read);
     const ebml::Index idx = ebml::scan(file, std::nullopt);
@@ -135,14 +136,15 @@ std::vector<SourceMeta> readFlacMeta(const QString &path)
         if (a.name == kAttachmentName) {
             std::vector<uint8_t> buf(static_cast<size_t>(a.len));
             file.readAt(buf.data(), buf.size(), a.off);
-            return parseFlacMeta(buf.data(), buf.size());
+            return parseFlacMeta(buf.data(), buf.size(), codec);
         }
     }
     throw Error(path.toStdString() + ": no rfx.json attachment (not an rfx archive)");
 }
 
-void packFlac(const std::vector<QString> &inputs, const QString &output, const PackOptions &o)
+void packFlac(const std::vector<QString> &inputs, const QString &output, const PackOptions &o, StoredCodec codec, const std::vector<StoredTrackEdit> &edits)
 {
+    const bool rawPcm = codec == StoredCodec::Raw;
     if (inputs.empty()) {
         throw Error("no input");
     }
@@ -168,7 +170,8 @@ void packFlac(const std::vector<QString> &inputs, const QString &output, const P
     std::vector<std::string> names;
     for (size_t i = 0; i < decoded.paths.size(); ++i) {
         const QString &p = decoded.paths[i];
-        const std::string name = QFileInfo(inputs[i]).fileName().toStdString();
+        const StoredTrackEdit *edit = i < edits.size() ? &edits[i] : nullptr;
+        const std::string name = edit && edit->name ? *edit->name : QFileInfo(inputs[i]).fileName().toStdString();
         if (name.empty()) {
             throw Error("input has no file name");
         }
@@ -196,17 +199,39 @@ void packFlac(const std::vector<QString> &inputs, const QString &output, const P
         sm.mean = st.mean;
         sm.position = i;
         sm.sidecars = findSidecars(inputs[i]);
+        sm.fileTime = QFileInfo(inputs[i]).lastModified().toUTC().toString(Qt::ISODate).toStdString();
         const std::optional<double> hz = sidecarRateHz(sm.sidecars);
         sm.rateHz = hz ? *hz : o.rateMhz * 1e6;
+        if (edit) {
+            if (edit->rateHz) {
+                sm.rateHz = *edit->rateHz;
+            }
+            if (edit->notes) {
+                sm.notes = *edit->notes;
+            }
+            if (edit->fileTime) {
+                sm.fileTime = *edit->fileTime;
+            }
+            if (edit->bits) {
+                sm.bits = *edit->bits;
+            }
+            if (edit->sidecars) {
+                sm.sidecars = *edit->sidecars;
+            }
+        }
         if (inputs[i] != p) {
             sm.origin = QFileInfo(inputs[i]).fileName().toStdString();
         }
         const QString raw = raw16(p, fmt, work, i);
         hashes.push_back(hashWholeFile(raw));
-        const QString flac = QDir(work).filePath(QStringLiteral("%1.flac").arg(static_cast<qulonglong>(i)));
-        runFfmpeg({"-v", "error", "-y", "-f", "s16le", "-ar", QString::number(static_cast<qulonglong>(std::llround(sm.rateHz / 1000.0))), "-ac", "1", "-i", raw, "-c:a", "flac",
-                   "-compression_level", QString::number(kFlacCompressionLevel), flac},
-                  "ffmpeg could not encode " + name);
+        const QString flac = QDir(work).filePath(QStringLiteral("%1.%2").arg(static_cast<qulonglong>(i)).arg(rawPcm ? QStringLiteral("mka") : QStringLiteral("flac")));
+        QStringList encode = {"-v", "error", "-y", "-f", "s16le", "-ar", QString::number(static_cast<qulonglong>(std::llround(sm.rateHz / 1000.0))), "-ac", "1", "-i", raw};
+        if (rawPcm) {
+            encode << "-c:a" << "pcm_s16le" << flac;
+        } else {
+            encode << "-c:a" << "flac" << "-compression_level" << QString::number(kFlacCompressionLevel) << flac;
+        }
+        runFfmpeg(encode, "ffmpeg could not encode " + name);
         if (raw != p) {
             QFile::remove(raw);
         }
@@ -214,7 +239,7 @@ void packFlac(const std::vector<QString> &inputs, const QString &output, const P
         tracks.push_back(std::move(sm));
     }
     const QString json = QDir(work).filePath(QStringLiteral("rfx.json"));
-    const std::vector<uint8_t> metaBytes = serializeFlacMeta(tracks);
+    const std::vector<uint8_t> metaBytes = serializeFlacMeta(tracks, rawPcm ? "raw" : "flac");
     writeText(json, std::string(metaBytes.begin(), metaBytes.end()));
     const QString tmp = withExtension(output, QStringLiteral("rfx-tmp"));
     QStringList args = {"-v", "error", "-y"};
@@ -253,14 +278,15 @@ void packFlac(const std::vector<QString> &inputs, const QString &output, const P
     if (!QFile::rename(tmp, output)) {
         throw Error("writing " + output.toStdString());
     }
-    std::fprintf(stderr, "total: %llu -> %llu bytes (%.1f%%), FLAC tracks\n", static_cast<unsigned long long>(raw),
-                 static_cast<unsigned long long>(total), 100.0 * static_cast<double>(total) / static_cast<double>(std::max<uint64_t>(raw, 1)));
+    std::fprintf(stderr, "total: %llu -> %llu bytes (%.1f%%), %s tracks\n", static_cast<unsigned long long>(raw),
+                 static_cast<unsigned long long>(total), 100.0 * static_cast<double>(total) / static_cast<double>(std::max<uint64_t>(raw, 1)), rawPcm ? "raw PCM" : "FLAC");
 }
 
 std::string flacInfo(const QString &path)
 {
-    const std::vector<SourceMeta> tracks = readFlacMeta(path);
-    std::string out = QString::asprintf("%s: %zu tracks, FLAC\n", path.toStdString().c_str(), tracks.size()).toStdString();
+    std::string codec;
+    const std::vector<SourceMeta> tracks = readFlacMeta(path, &codec);
+    std::string out = QString::asprintf("%s: %zu tracks, %s\n", path.toStdString().c_str(), tracks.size(), codec == "raw" ? "raw PCM" : "FLAC").toStdString();
     for (size_t k = 0; k < tracks.size(); ++k) {
         const SourceMeta &sm = tracks[k];
         out += QString::asprintf("  %zu: %s  %llu bytes  %llu samples at %s Hz  format %s\n", k, sm.name.c_str(), static_cast<unsigned long long>(sm.size),
@@ -278,7 +304,8 @@ std::string flacInfo(const QString &path)
 
 std::string flacYaml(const QString &path)
 {
-    const std::vector<SourceMeta> tracks = readFlacMeta(path);
+    std::string codec;
+    const std::vector<SourceMeta> tracks = readFlacMeta(path, &codec);
     Node list = Node::array();
     for (size_t k = 0; k < tracks.size(); ++k) {
         const SourceMeta &sm = tracks[k];
@@ -314,7 +341,7 @@ std::string flacYaml(const QString &path)
     }
     Node doc = Node::object();
     doc.set("format", Node::string(kFormatName));
-    doc.set("codec", Node::string("flac"));
+    doc.set("codec", Node::string(codec));
     doc.set("version", Node::unsignedInteger(kFormatVersion));
     doc.set("tracks", list);
     std::string out;
@@ -415,6 +442,92 @@ void unpackFlac(const QString &path, const QString &outdir, std::optional<size_t
             encodeFlacFile(dst, sm, target->kind == OutputFormat::Kind::Ldf, outdir);
         }
     }
+}
+
+void assembleStored(const std::vector<QString> &archives, const std::vector<Pick> &picks, const QString &output, const PackOptions &o, StoredCodec codec)
+{
+    if (picks.empty()) {
+        throw Error("nothing to write: no track selected");
+    }
+    struct Source
+    {
+        bool stored = false;
+        std::vector<SourceMeta> tracks;
+    };
+    std::vector<Source> sources;
+    for (const QString &a : archives) {
+        Source s;
+        s.stored = isFlacArchive(a);
+        s.tracks = s.stored ? readFlacMeta(a) : Archive(a).meta().sources;
+        sources.push_back(std::move(s));
+    }
+    const QString work = withExtension(output, QStringLiteral("stored-work"));
+    QDir(work).removeRecursively();
+    QDir().mkpath(work);
+    struct Cleanup
+    {
+        QString work;
+        ~Cleanup() { QDir(work).removeRecursively(); }
+    } cleanup{work};
+
+    std::vector<QString> files;
+    std::vector<StoredTrackEdit> edits;
+    std::string format;
+    bool same = true;
+    for (size_t k = 0; k < picks.size(); ++k) {
+        const Pick &p = picks[k];
+        StoredTrackEdit e;
+        if (!p.fromArchive) {
+            files.push_back(p.capture);
+            e.rateHz = p.edit.rateHz;
+            e.notes = p.edit.notes;
+            e.bits = p.edit.bits;
+            edits.push_back(std::move(e));
+            same = false;
+            continue;
+        }
+        if (p.arch >= sources.size() || p.src >= sources[p.arch].tracks.size()) {
+            throw Error("no track " + std::to_string(p.src) + " in archive " + std::to_string(p.arch));
+        }
+        const SourceMeta &sm = sources[p.arch].tracks[p.src];
+        const QString dir = QDir(work).filePath(QString::number(k));
+        QDir().mkpath(dir);
+        if (sources[p.arch].stored) {
+            unpackFlac(archives[p.arch], dir, p.src, std::nullopt);
+        } else {
+            UnpackOptions unpack;
+            unpack.only = p.src;
+            unpack.device = o.device;
+            unpack.threads = o.threads;
+            unpackArchive(archives[p.arch], dir, unpack);
+        }
+        files.push_back(QDir(dir).filePath(safeFileName(sm.name, "track")));
+        e.name = p.edit.name ? p.edit.name : std::optional<std::string>(sm.name);
+        if (p.edit.rateHz) {
+            e.rateHz = p.edit.rateHz;
+        } else if (sm.rateHz > 0) {
+            e.rateHz = sm.rateHz;
+        }
+        e.notes = p.edit.notes ? p.edit.notes : std::optional<std::string>(sm.notes);
+        e.fileTime = sm.fileTime;
+        if (p.edit.bits) {
+            e.bits = p.edit.bits;
+        } else if (sm.bits > 0) {
+            e.bits = sm.bits;
+        }
+        e.sidecars = p.edit.sidecars ? p.edit.sidecars : std::optional<std::vector<Sidecar>>(sm.sidecars);
+        edits.push_back(std::move(e));
+        if (format.empty()) {
+            format = sm.fmt;
+        } else if (format != sm.fmt) {
+            same = false;
+        }
+    }
+    PackOptions options = o;
+    options.order = OrderMode::Given;
+    // The tracks come out under the names they had, whatever their extensions: the format is given, when it is one for all.
+    options.format = same && !format.empty() ? format : "auto";
+    packFlac(files, output, options, codec, edits);
 }
 
 } // namespace rfx

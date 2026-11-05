@@ -65,8 +65,9 @@ std::optional<uint64_t> flacSamplesFromTail(const QString &path, const FlacInfo 
 
 // `count` samples of a compressed capture from sample `start`, as 16-bit values, decoded by ffmpeg from where they are (it
 // jumps there: a FLAC has marks to jump to). `headerRate` is the rate in the header of the file (the samples are in that
-// time). Fewer come back past the end. Throws rfx::Error.
-std::vector<int16_t> decodeWindow(const QString &path, double headerRate, uint64_t start, size_t count);
+// time). Fewer come back past the end. `audioStream` (when not negative) picks the audio stream of a file that holds several, as the tracks
+// of the FLAC and raw variants of .rfx are. Throws rfx::Error.
+std::vector<int16_t> decodeWindow(const QString &path, double headerRate, uint64_t start, size_t count, int audioStream = -1);
 
 void streamFfmpegOutput(const QStringList &args, const std::function<void(const char *, size_t)> &sink, const std::string &failure);
 
