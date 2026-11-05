@@ -54,6 +54,7 @@ private:
     QComboBox *m_device = nullptr;
     QSpinBox *m_threads = nullptr;
     QCheckBox *m_verify = nullptr;
+    QCheckBox *m_pass0 = nullptr;
     QDoubleSpinBox *m_rate = nullptr;
 };
 

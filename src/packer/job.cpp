@@ -9,6 +9,7 @@
  ******************************************************************************/
 
 #include "job.h"
+#include "rfsync.h"
 
 #include "capture.h"
 #include "error.h"
@@ -61,6 +62,15 @@ QByteArray jobToJson(const Job &job)
     root["archive"] = job.archive;
     root["output"] = job.output;
     root["codec"] = job.codec == Codec::Flac ? "flac" : (job.codec == Codec::Raw ? "raw" : "rfx");
+    if (job.pass0Only) {
+        root["pass0_only"] = true;
+    }
+    if (job.unpack) {
+        root["unpack"] = true;
+        if (job.only) {
+            root["only"] = static_cast<double>(*job.only);
+        }
+    }
     QJsonArray picks;
     for (const rfx::Pick &p : job.picks) {
         QJsonObject o;
@@ -91,6 +101,7 @@ QByteArray jobToJson(const Job &job)
     opt["level"] = job.options.level;
     opt["segment"] = static_cast<double>(job.options.segment);
     opt["verify"] = job.options.verify;
+    opt["keep_pass0"] = job.options.keepPass0;
     opt["rate_mhz"] = job.options.rateMhz;
     opt["device"] = job.options.device == rfx::Device::Gpu ? "gpu" : "cpu";
     opt["threads"] = static_cast<double>(job.options.threads);
@@ -115,6 +126,11 @@ Job jobFromJson(const QByteArray &json)
     job.output = root["output"].toString();
     const QString codec = root["codec"].toString();
     job.codec = codec == QLatin1String("flac") ? Codec::Flac : (codec == QLatin1String("raw") ? Codec::Raw : Codec::Rfx);
+    job.unpack = root["unpack"].toBool();
+    job.pass0Only = root["pass0_only"].toBool();
+    if (root.contains("only")) {
+        job.only = static_cast<size_t>(root["only"].toDouble());
+    }
     for (const QJsonValue &v : root["picks"].toArray()) {
         const QJsonObject o = v.toObject();
         rfx::Pick p;
@@ -144,6 +160,7 @@ Job jobFromJson(const QByteArray &json)
     job.options.level = opt["level"].toInt(3);
     job.options.segment = static_cast<size_t>(opt["segment"].toDouble(262144));
     job.options.verify = opt["verify"].toBool(true);
+    job.options.keepPass0 = opt["keep_pass0"].toBool(false);
     job.options.rateMhz = opt["rate_mhz"].toDouble(75.0);
     job.options.device = opt["device"].toString() == QLatin1String("gpu") ? rfx::Device::Gpu : rfx::Device::Cpu;
     job.options.threads = static_cast<unsigned>(opt["threads"].toDouble(0));
@@ -198,6 +215,28 @@ std::vector<QString> listAsFiles(const Job &job, const QString &work)
 
 void runJob(const Job &job)
 {
+    if (job.pass0Only) {
+        if (job.archive.isEmpty()) {
+            throw rfx::Error("nothing to work on: no .rfx file is open");
+        }
+        rfx::keepPass0(job.archive, job.options.rateMhz, false);
+        return;
+    }
+    if (job.unpack) {
+        if (job.archive.isEmpty()) {
+            throw rfx::Error("nothing to unpack: no .rfx file is open");
+        }
+        if (rfx::isFlacArchive(job.archive)) {
+            rfx::unpackFlac(job.archive, job.output, job.only, std::nullopt);
+        } else {
+            rfx::UnpackOptions unpack;
+            unpack.only = job.only;
+            unpack.device = job.options.device;
+            unpack.threads = job.options.threads;
+            rfx::unpackArchive(job.archive, job.output, unpack);
+        }
+        return;
+    }
     if (job.picks.empty()) {
         throw rfx::Error("nothing to write: the list has no track");
     }
@@ -216,6 +255,9 @@ void runJob(const Job &job)
         }
         rfx::assembleArchives({}, picks, job.output, job.options, std::nullopt);
         QDir(work).removeRecursively();
+        if (job.options.keepPass0) {
+            rfx::keepPass0(job.output, job.options.rateMhz, true);
+        }
         return;
     }
     if (job.codec == Codec::Rfx) {
@@ -224,6 +266,9 @@ void runJob(const Job &job)
             archives.push_back(job.archive);
         }
         rfx::assembleArchives(archives, job.picks, job.output, job.options, std::nullopt);
+        if (job.options.keepPass0) {
+            rfx::keepPass0(job.output, job.options.rateMhz, true);
+        }
         return;
     }
     // The FLAC or the raw variant: the tracks are unpacked and written again, with the name, rate, note, files and bits the list says.
@@ -236,6 +281,9 @@ void runJob(const Job &job)
 
 void removeJobLeftovers(const QString &output)
 {
+    if (output.isEmpty()) {
+        return;   // (a job that writes no file leaves nothing: and an empty name would be the current folder)
+    }
     // The names are those of the library (the output with its last extension replaced).
     for (const char *extension : {"rfx-tmp"}) {
         QFile::remove(rfx::withExtension(output, QString::fromLatin1(extension)));

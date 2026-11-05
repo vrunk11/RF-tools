@@ -18,6 +18,8 @@
 #include <QString>
 #include <QVector>
 
+#include <optional>
+
 // How the list is written: with the predictor (an .rfx file), as FLAC (an .rfx file that audio programs open) or as raw captures in a
 // folder.
 enum class Codec { Rfx, Flac, Raw };
@@ -34,6 +36,11 @@ struct Job
     std::vector<rfx::Pick> picks;
     rfx::PackOptions options;
     Codec codec = Codec::Rfx;
+    // Give the captures back instead of writing a file: `output` is then the folder, `only` the track of the archive (all when empty).
+    bool unpack = false;
+    // Locate the lines of the tracks of rchive and keep them in it, as it is (nothing is coded again).
+    bool pass0Only = false;
+    std::optional<size_t> only;
 };
 
 QByteArray jobToJson(const Job &job);

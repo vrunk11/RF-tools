@@ -107,6 +107,8 @@ private slots:
     void writesACopyAndOverwrites();
     void createsAnArchiveFromCaptures();
     void codecsAndTheFormatOfTheList();
+    void unpacksAllAndOneTrack();
+    void computesThePass0Curve();
     void panelOpensAndCloses();
 
 private:
@@ -300,6 +302,49 @@ void PackerTests::createsAnArchiveFromCaptures()
     QCOMPARE(archive.meta().sources.size(), size_t(1));
     QCOMPARE(QString::fromStdString(archive.meta().sources[0].notes), QStringLiteral("only one"));
     QVERIFY(archive.meta().sources[0].fileTime.has_value());
+}
+
+void PackerTests::unpacksAllAndOneTrack()
+{
+    MainWindow w;
+    QVERIFY(!w.unpack(std::nullopt, m_dir.filePath("none")));
+    QVERIFY(w.openArchive(m_archive));
+    const QString all = m_dir.filePath("unpacked-all");
+    QVERIFY(w.unpack(std::nullopt, all));
+    QVERIFY(QFile::exists(all + "/a.ddd.s16"));
+    QVERIFY(QFile::exists(all + "/b.ddd.s16"));
+    QCOMPARE(QFileInfo(all + "/a.ddd.s16").size(), QFileInfo(m_dir.filePath("a.ddd.s16")).size());
+    const QString one = m_dir.filePath("unpacked-one");
+    QVERIFY(w.unpack(size_t(1), one));
+    QVERIFY(QFile::exists(one + "/b.ddd.s16"));
+    QVERIFY(!QFile::exists(one + "/a.ddd.s16"));
+    QVERIFY(w.findChild<QToolButton *>("rowUnpack"));
+}
+
+void PackerTests::computesThePass0Curve()
+{
+    // What the job says is kept through its file, and the work on an opened file leaves it as it was (a capture with no video in it has no
+    // lines to keep: the file is added to all the same, and still opens).
+    Job job;
+    job.archive = QStringLiteral("a.rfx");
+    job.pass0Only = true;
+    job.options.keepPass0 = true;
+    const Job back = jobFromJson(jobToJson(job));
+    QVERIFY(back.pass0Only && back.options.keepPass0);
+    QVERIFY(!jobFromJson(jobToJson(Job())).pass0Only);
+
+    const QString copy = m_dir.filePath("p0-copy.rfx");
+    QVERIFY(QFile::copy(m_archive, copy));
+    MainWindow w;
+    QVERIFY(!w.computePass0(false));
+    QVERIFY(w.openArchive(copy));
+    QVERIFY(w.computePass0(false));
+    Document doc;
+    QString error;
+    QVERIFY2(doc.open(copy, &error), qPrintable(error));
+    QCOMPARE(doc.count(), 2);
+    QVERIFY(QFileInfo(copy).size() >= QFileInfo(m_archive).size());
+    QVERIFY(w.findChild<QAction *>("computePass0"));
 }
 
 void PackerTests::codecsAndTheFormatOfTheList()

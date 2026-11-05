@@ -27,6 +27,7 @@
 #include <QDragEnterEvent>
 #include <QDropEvent>
 #include <QFile>
+#include <QDir>
 #include <QFileDialog>
 #include <QFileInfo>
 #include <QGridLayout>
@@ -309,6 +310,16 @@ void MainWindow::buildMenus()
     file->addAction(tr("&Open RFX…"), this, &MainWindow::chooseArchive)->setShortcut(QKeySequence::Open);
     file->addAction(tr("&Add track…"), this, &MainWindow::chooseCaptures)->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_T));
     file->addSeparator();
+    m_unpackAll = file->addAction(tr("&Unpack all the tracks…"), this, [this] { unpack(std::nullopt); });
+    m_unpackAll->setObjectName(QStringLiteral("unpackAll"));
+    m_pass0Action = file->addAction(tr("Compute the &pass 0 curve"), this, [this] { computePass0(); });
+    m_pass0Action->setObjectName(QStringLiteral("computePass0"));
+    m_pass0Action->setToolTip(tr("Locate the lines of every track from its RF and keep them in the file (the speed of the disc and the time base correction, which rf-analyse then shows at once)."));
+    connect(file, &QMenu::aboutToShow, this, [this] {
+        m_unpackAll->setEnabled(!m_doc.archive().isEmpty());
+        m_pass0Action->setEnabled(!m_doc.archive().isEmpty() && m_doc.codec() == Codec::Rfx);
+    });
+    file->addSeparator();
     file->addAction(tr("&Quit"), this, &QWidget::close)->setShortcut(QKeySequence::Quit);
 
     QMenu *view = menuBar()->addMenu(tr("&View"));
@@ -332,7 +343,7 @@ void MainWindow::buildMenus()
     QMenu *help = menuBar()->addMenu(tr("&Help"));
     help->addAction(tr("&About RF-packer"), this, [this] {
         QMessageBox::about(this, tr("About RF-packer"),
-                           tr("<b>RF-packer</b> %1<br>Makes an .rfx file from captures, and changes the tracks of one: add, remove, reorder, code again, edit the metadata.<br>Part of RF-tools, GPL-3.0-or-later.")
+                           tr("<b>RF-packer</b> %1<br>Makes an .rfx file from captures, and changes the tracks of one: add, remove, reorder, code again, edit the metadata.<br>Part of RF-tools, GPL-3.0-or-later.<br><br>Contributors: vrunk11.")
                                .arg(QCoreApplication::applicationVersion()));
     });
 }
@@ -377,6 +388,7 @@ void MainWindow::rebuildList()
         connect(row, &TrackRow::picked, this, [this](int number) { pick(number - 1); });
         connect(row, &TrackRow::moved, this, [this](int number, int delta) { move(number - 1, delta); });
         connect(row, &TrackRow::removeAsked, this, [this](int number) { removeTrack(number - 1); });
+        connect(row, &TrackRow::unpackAsked, this, [this](int number) { unpack(m_doc.at(number - 1).src); });
         connect(row, &TrackRow::restoreAsked, this, [this](int number) { m_doc.restore(number - 1); });
         m_listLayout->addWidget(row);
     }
@@ -689,6 +701,67 @@ bool MainWindow::process(const QString &output, const rfx::PackOptions *options)
     const int keep = m_picked;
     m_doc.open(target, nullptr);
     m_picked = std::min(keep, m_doc.count() - 1);
+    return true;
+}
+
+bool MainWindow::unpack(std::optional<size_t> only, const QString &folder)
+{
+    if (m_doc.archive().isEmpty()) {
+        return false;
+    }
+    QString target = folder;
+    if (target.isEmpty()) {
+        QSettings settings;
+        const QString start = settings.value(QStringLiteral("unpackDir"), QFileInfo(m_doc.archive()).absolutePath()).toString();
+        target = QFileDialog::getExistingDirectory(this, only ? tr("Unpack the track into…") : tr("Unpack all the tracks into…"), start);
+        if (target.isEmpty()) {
+            return false;
+        }
+        settings.setValue(QStringLiteral("unpackDir"), target);
+    }
+    Job job;
+    job.archive = m_doc.archive();
+    job.output = target;
+    job.unpack = true;
+    job.only = only;
+    job.codec = m_doc.codec();
+    job.options.order = rfx::OrderMode::Given;
+    ProgressDialog progress(job, this);
+    progress.setWindowTitle(tr("Unpacking into %1").arg(QFileInfo(target).fileName()));
+    progress.start();
+    if (progress.exec() != QDialog::Accepted) {
+        if (!progress.error().isEmpty()) {
+            QMessageBox::critical(this, tr("RF-packer"), progress.error());
+        }
+        return false;
+    }
+    statusBar()->showMessage(tr("Unpacked into %1").arg(QDir::toNativeSeparators(target)), 8000);
+    return true;
+}
+
+bool MainWindow::computePass0(bool ask)
+{
+    if (m_doc.archive().isEmpty()) {
+        return false;
+    }
+    if (ask && QMessageBox::question(this, tr("RF-packer"), tr("Locate the lines of the tracks of %1 from their RF and keep them in the file? It takes minutes on large captures; the file is only added to, nothing in it is coded again.").arg(QFileInfo(m_doc.archive()).fileName())) != QMessageBox::Yes) {
+        return false;
+    }
+    Job job;
+    job.archive = m_doc.archive();
+    job.pass0Only = true;
+    job.codec = m_doc.codec();
+    job.options.order = rfx::OrderMode::Given;
+    ProgressDialog progress(job, this);
+    progress.setWindowTitle(tr("Pass 0 of %1").arg(QFileInfo(m_doc.archive()).fileName()));
+    progress.start();
+    if (progress.exec() != QDialog::Accepted) {
+        if (!progress.error().isEmpty()) {
+            QMessageBox::critical(this, tr("RF-packer"), progress.error());
+        }
+        return false;
+    }
+    statusBar()->showMessage(tr("The pass 0 curve is kept in %1").arg(QDir::toNativeSeparators(m_doc.archive())), 8000);
     return true;
 }
 

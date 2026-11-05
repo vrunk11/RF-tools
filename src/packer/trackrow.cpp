@@ -112,6 +112,12 @@ TrackRow::TrackRow(const Entry &entry, int index, EntryState state, const QColor
     const bool removed = state == EntryState::Removed;
     auto *drop = smallButton(removed ? QStringLiteral("↩") : QStringLiteral("✕"), removed ? tr("Keep the track") : tr("Remove the track"), this);
     drop->setObjectName(QStringLiteral("rowRemove"));
+    if (entry.fromArchive && !removed) {
+        auto *unpack = smallButton(QStringLiteral("⤓"), tr("Unpack the capture of this track"), this);
+        unpack->setObjectName(QStringLiteral("rowUnpack"));
+        top->addWidget(unpack);
+        connect(unpack, &QToolButton::clicked, this, [this] { emit unpackAsked(m_index); });
+    }
     top->addWidget(up);
     top->addWidget(down);
     top->addWidget(drop);

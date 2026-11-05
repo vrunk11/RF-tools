@@ -44,6 +44,10 @@ public:
     bool saveScreenshot(const QString &path);
     // Write the list: asks where (a copy or over the archive) unless `output` is given; the work runs in the program again.
     bool process(const QString &output = QString(), const rfx::PackOptions *options = nullptr);
+    // Give the captures of the opened file back, in a folder (asked unless `folder` is given): the track `only` (its number in the file), or all.
+    bool unpack(std::optional<size_t> only, const QString &folder = QString());
+    // Locate the lines of the tracks of the opened file from their RF and keep them in it (the pass 0 curve), asking first.
+    bool computePass0(bool ask = true);
 
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
@@ -86,6 +90,8 @@ private:
     QLabel *m_summary = nullptr;
     QLabel *m_hint = nullptr;
     QAction *m_infoAction = nullptr;
+    QAction *m_unpackAll = nullptr;
+    QAction *m_pass0Action = nullptr;
 
     QWidget *m_info = nullptr;
     QLabel *m_infoTitle = nullptr;

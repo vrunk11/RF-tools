@@ -10,6 +10,8 @@
 
 #include "processdialog.h"
 
+#include "opencl.h"
+
 #include <QCheckBox>
 #include <QComboBox>
 #include <QCoreApplication>
@@ -75,13 +77,22 @@ ProcessDialog::ProcessDialog(const QString &archive, Codec codec, QWidget *paren
     m_device = new QComboBox(this);
     m_device->addItem(tr("Processor"), QStringLiteral("cpu"));
     m_device->addItem(tr("Graphics card"), QStringLiteral("gpu"));
-    m_device->setCurrentIndex(m_device->findData(settings.value(QStringLiteral("packDevice"), QStringLiteral("cpu")).toString()));
+    // The graphics card unless the person chose otherwise before, when there is one to use.
+    bool gpuAvailable = false;
+    try {
+        gpuAvailable = rfx::cl::Device::get() != nullptr;
+    } catch (const std::exception &) {
+    }
+    m_device->setCurrentIndex(m_device->findData(settings.value(QStringLiteral("packDevice"), gpuAvailable ? QStringLiteral("gpu") : QStringLiteral("cpu")).toString()));
     m_threads = new QSpinBox(this);
     m_threads->setRange(0, 256);
     m_threads->setSpecialValueText(tr("one per processor"));
     m_threads->setValue(settings.value(QStringLiteral("packThreads"), 0).toInt());
     m_verify = new QCheckBox(tr("Decode every segment again and compare it with its samples"), this);
     m_verify->setChecked(settings.value(QStringLiteral("packVerify"), true).toBool());
+    m_pass0 = new QCheckBox(tr("Compute the pass 0 curve (the speed of the disc and the time base correction)"), this);
+    m_pass0->setChecked(settings.value(QStringLiteral("packPass0"), false).toBool());
+    m_pass0->setToolTip(tr("Locate the lines of every track from its RF once the file is written and keep them in it, so that rf-analyse shows the speed and aligns the captures at once. It takes minutes on large captures."));
     m_rate = new QDoubleSpinBox(this);
     m_rate->setRange(0.001, 1000.0);
     m_rate->setDecimals(4);
@@ -97,8 +108,10 @@ ProcessDialog::ProcessDialog(const QString &archive, Codec codec, QWidget *paren
     form->addRow(tr("Threads"), m_threads);
     if (codec == Codec::Rfx) {
         form->addRow(QString(), m_verify);
+        form->addRow(QString(), m_pass0);
     } else {
         m_verify->hide();
+        m_pass0->hide();
     }
     form->addRow(tr("Default rate"), m_rate);
     layout->addLayout(form);
@@ -158,6 +171,7 @@ rfx::PackOptions ProcessDialog::options() const
     o.order = rfx::OrderMode::Given;
     o.level = m_level->currentData().toInt();
     o.verify = m_verify->isChecked();
+    o.keepPass0 = m_pass0->isVisibleTo(const_cast<ProcessDialog *>(this)) && m_pass0->isChecked();
     o.device = m_device->currentData().toString() == QLatin1String("gpu") ? rfx::Device::Gpu : rfx::Device::Cpu;
     o.threads = static_cast<unsigned>(m_threads->value());
     o.rateMhz = m_rate->value();
@@ -181,6 +195,7 @@ void ProcessDialog::accept()
     settings.setValue(QStringLiteral("packDevice"), m_device->currentData().toString());
     settings.setValue(QStringLiteral("packThreads"), m_threads->value());
     settings.setValue(QStringLiteral("packVerify"), m_verify->isChecked());
+    settings.setValue(QStringLiteral("packPass0"), m_pass0->isChecked());
     settings.setValue(QStringLiteral("packRate"), m_rate->value());
     settings.setValue(QStringLiteral("lastDir"), QFileInfo(output()).absolutePath());
     QDialog::accept();
@@ -272,6 +287,34 @@ void ProgressDialog::readOutput()
         if (line.trimmed().isEmpty()) {
             continue;
         }
+        static const QRegularExpression pass0(QStringLiteral("^pass 0 \\[(\\d+)/(\\d+)\\] (.+): (\\d+)%$"));
+        static const QRegularExpression coding(QStringLiteral("^coding (.+): (\\d+)%$"));
+        const QRegularExpressionMatch p0 = pass0.match(line);
+        if (p0.hasMatch()) {
+            // Where the lines of the captures are located: the bar goes over all of them.
+            const int at = p0.captured(1).toInt();
+            const int of = p0.captured(2).toInt();
+            const int percent = p0.captured(4).toInt();
+            m_bar->setRange(0, of * 100);
+            m_bar->setValue((at - 1) * 100 + percent);
+            m_status->setText(tr("Locating the lines of %1 (%2 of %3): %4%").arg(p0.captured(3)).arg(at).arg(of).arg(percent));
+            if (percent == 100) {
+                m_log->appendPlainText(line);
+            }
+            continue;
+        }
+        const QRegularExpressionMatch cd = coding.match(line);
+        if (cd.hasMatch()) {
+            if (m_total > 0) {
+                m_bar->setRange(0, m_total * 100);
+                m_bar->setValue(m_done * 100 + cd.captured(2).toInt());
+            }
+            m_status->setText(tr("Coding %1: %2%").arg(cd.captured(1)).arg(cd.captured(2).toInt()));
+            continue;
+        }
+        if (line.startsWith(QLatin1String("hashing and scanning"))) {
+            m_status->setText(tr("Reading the captures…"));
+        }
         m_log->appendPlainText(line);
         m_tail = line;
         static const QRegularExpression count(QStringLiteral("^(\\d+) track\\(s\\) to write"));
@@ -279,11 +322,11 @@ void ProgressDialog::readOutput()
         const QRegularExpressionMatch m = count.match(line);
         if (m.hasMatch()) {
             m_total = m.captured(1).toInt();
-            m_bar->setRange(0, m_total);
+            m_bar->setRange(0, m_total * 100);
             m_bar->setValue(0);
         } else if (done.match(line).hasMatch() && m_total > 0) {
             m_done = qMin(m_done + 1, m_total);
-            m_bar->setValue(m_done);
+            m_bar->setValue(m_done * 100);
             m_status->setText(tr("Track %1 of %2 written").arg(m_done).arg(m_total));
         }
     }

@@ -30,6 +30,7 @@ signals:
     void picked(int index);
     void moved(int index, int delta);
     void removeAsked(int index);
+    void unpackAsked(int index);
     void restoreAsked(int index);
 
 protected:
