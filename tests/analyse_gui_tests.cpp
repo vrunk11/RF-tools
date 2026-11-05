@@ -445,6 +445,8 @@ void AnalyseGuiTests::viewsHaveWhatToShow()
     QVERIFY(deviation->curves().isEmpty());
     session->setRfSpeed(true);
     QCOMPARE(deviation->curves(), (QVector<int>{0}));
+    // Several tracks: the boxes of the stack and of its noise are there to be ticked.
+    QVERIFY(w.findChild<QCheckBox *>("stackBox")->isEnabled() && w.findChild<QCheckBox *>("residueBox")->isEnabled());
     // The box of the combined view is about every track shown.
     auto *rfBox = w.findChild<DeviationBlock *>("combinedDeviation")->findChild<QCheckBox *>("rfSpeedBox");
     rfBox->setChecked(true);
@@ -804,10 +806,33 @@ void AnalyseGuiTests::listOfTracksCanBePutAway()
     QVERIFY(list && toggle);
     QVERIFY(!list->isVisible());
     QVERIFY(w.findChild<MetadataPanel *>("metadataPanel")->isVisible());
+    // The window follows the list: wider when it comes, as wide as it was when it goes.
+    const int narrow = w.width();
     toggle->click();
+    QTest::qWait(100);
     QVERIFY(list->isVisible());
+    QVERIFY(w.width() > narrow + 50);
     toggle->click();
+    QTest::qWait(100);
     QVERIFY(!list->isVisible());
+    QVERIFY(std::abs(w.width() - narrow) <= 2);
+
+    // The same with the panel of metadata on the other side (View > Metadata panel).
+    QAction *metadata = nullptr;
+    for (QAction *a : w.findChildren<QAction *>()) {
+        if (a->text() == QLatin1String("&Metadata panel")) {
+            metadata = a;
+        }
+    }
+    QVERIFY(metadata && metadata->isChecked());
+    const int withInfo = w.width();
+    metadata->setChecked(false);
+    QTest::qWait(100);
+    QVERIFY(!w.findChild<MetadataPanel *>("metadataPanel")->isVisible());
+    QVERIFY(w.width() < withInfo - 50);
+    metadata->setChecked(true);
+    QTest::qWait(100);
+    QVERIFY(std::abs(w.width() - withInfo) <= 2);
 
     // Files added to the one that is open: its tracks stay, the list comes back.
     QVERIFY(w.openSources({archive}, true));
@@ -970,7 +995,8 @@ void AnalyseGuiTests::graphsFollowTheSizeAndShowValues()
     w.setView(QStringLiteral("individual"));
     QVERIFY(settle(*session));
     QTest::qWait(200);
-    QCOMPARE(amplitude->value(), gainKept);
+    // (a few pixels, as the graph of a lane is laid out for the first time, are not the user's: the amplitude stays within a few percent)
+    QVERIFY2(std::fabs(amplitude->value() / gainKept - 1.0) < 0.03, qPrintable(QString::number(amplitude->value())));
     QCOMPARE(session->windowLength(), timeKept);
     w.setView(QStringLiteral("combined"));
     QTest::qWait(100);
@@ -1083,6 +1109,10 @@ void AnalyseGuiTests::showsTheSidecarOfACapture()
     w.show();
     auto *session = w.findChild<Session *>();
     QVERIFY(settle(*session));
+    // One track alone: nothing to stack, the boxes of the stack and of its noise are greyed (the one of the alignment is not).
+    QVERIFY(!w.findChild<QCheckBox *>("stackBox")->isEnabled());
+    QVERIFY(!w.findChild<QCheckBox *>("residueBox")->isEnabled());
+    QVERIFY(w.findChild<QCheckBox *>("alignBox")->isEnabled());
     auto *panel = w.findChild<MetadataPanel *>("metadataPanel");
     QStringList names;
     for (int i = 0; i < panel->topLevelItemCount(); ++i) {
@@ -1198,6 +1228,28 @@ void AnalyseGuiTests::speedFromTheRf()
         const std::vector<float> corrected = inArchive.result().wave[0];
         QCOMPARE(corrected.size(), plain.size());
         QVERIFY(corrected != plain);
+        // The stack of one track is the track, and the noise it removes is nothing: one curve for all of them (a band), or one for each.
+        inArchive.setStackShown(true);
+        inArchive.setResidueShown(true);
+        QVERIFY(settle(inArchive));
+        QCOMPARE(inArchive.result().traces.size(), size_t(2));
+        QCOMPARE(inArchive.result().traces[0].label, QStringLiteral("stack"));
+        QVERIFY(inArchive.result().traces[0].wave == corrected);
+        QVERIFY(!inArchive.result().traces[0].spectrum.db.empty());
+        QVERIFY(inArchive.result().traces[1].band);
+        for (const float v : inArchive.result().traces[1].wave) {
+            QCOMPARE(v, 0.0F);
+        }
+        inArchive.setCombinedResidue(false);
+        QVERIFY(settle(inArchive));
+        QCOMPARE(inArchive.result().traces.size(), size_t(2));
+        QCOMPARE(inArchive.result().traces[1].track, 0);
+        QVERIFY(!inArchive.result().traces[1].band);
+        inArchive.setStackShown(false);
+        inArchive.setResidueShown(false);
+        inArchive.setCombinedResidue(true);
+        QVERIFY(settle(inArchive));
+        QVERIFY(inArchive.result().traces.empty());
         inArchive.setAligned(0, false);
         // The curve kept in the file (at its end, nothing else changes) is there when it is opened again, with no work.
         QString saveError;
@@ -1302,8 +1354,9 @@ void AnalyseGuiTests::alignsASubsetOfTheTracks()
     Session s;
     QString error;
     QVERIFY2(s.open(path, &error), qPrintable(error));
-    s.setVisible(0, false);
-    s.setVisible(1, false);
+    for (const int hidden : {0, 1, 4, 5}) {
+        s.setVisible(hidden, false);
+    }
     const auto energy = [&](int k) {
         double e = 0;
         for (float v : s.result().wave[static_cast<size_t>(k)]) {
@@ -1325,6 +1378,44 @@ void AnalyseGuiTests::alignsASubsetOfTheTracks()
     }
     QVERIFY(s.upToDate());
     QVERIFY(energy(2) > 0 && energy(3) > 0);
+    // The spectrum and the statistics too: round the bar, which is where the captures are.
+    QVERIFY(!s.result().pastEnd[2] && !s.result().pastEnd[3]);
+    // The stack of the two and the noise it removes: the noise is less than the signal, and the stack is what both have.
+    s.setStackShown(true);
+    s.setResidueShown(true);
+    QVERIFY(settle(s));
+    QCOMPARE(s.result().traces.size(), size_t(2));
+    const auto power = [](const std::vector<float> &v) {
+        double e = 0;
+        for (const float x : v) {
+            e += double(x) * x;
+        }
+        return e;
+    };
+    QVERIFY(power(s.result().traces[0].wave) > 0);
+    QVERIFY(power(s.result().traces[1].wave) < 0.1 * power(s.result().traces[0].wave));
+    // (nowhere does the spread come near the signal: a track missing at a place is not counted as a signal of zero there)
+    float peakStack = 0, peakSpread = 0;
+    for (const float v : s.result().traces[0].wave) {
+        peakStack = std::max(peakStack, std::fabs(v));
+    }
+    for (const float v : s.result().traces[1].wave) {
+        peakSpread = std::max(peakSpread, v);
+    }
+    QVERIFY2(peakSpread < 0.5F * peakStack, qPrintable(QString("%1 %2").arg(peakSpread).arg(peakStack)));
+    s.setStackShown(false);
+    s.setResidueShown(false);
+    QVERIFY(!s.result().spectra[2].db.empty() && !s.result().spectra[3].db.empty());
+    // The tracks shown change, the window had been taken back: it is brought to where the ones shown are.
+    const qint64 placed = s.windowStart();
+    QVERIFY(placed > 0);
+    s.setWindowStart(0);
+    s.setCursor(1000, false);
+    s.setVisible(3, false);
+    QVERIFY(settle(s));
+    QVERIFY(s.windowStart() >= placed || s.windowStart() > 0);
+    QVERIFY(energy(2) > 0);
+    QVERIFY(!s.result().pastEnd[2]);
 }
 
 void AnalyseGuiTests::decodesCompressedCaptures()

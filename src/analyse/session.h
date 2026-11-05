@@ -27,6 +27,18 @@
 #include <mutex>
 #include <vector>
 
+// A curve of the combined view that is not a track: the stack of the tracks aligned (their mean), or the noise it removes (what each track
+// has more than the stack, or, for all of them at once, the spread of the tracks round it, drawn as a band both sides of 0).
+struct Trace
+{
+    // The track whose colour and name it has (-1: the stack, or the residue of all of them).
+    int track = -1;
+    QString label;
+    bool band = false;
+    std::vector<float> wave;
+    rfx::Spectrum spectrum;
+};
+
 // What the worker made for one state of the session.
 struct AnalysisResult
 {
@@ -36,6 +48,8 @@ struct AnalysisResult
     // For every track (empty for the ones not shown): the samples of the window in
     // the units of the converter with the most bits.
     std::vector<std::vector<float>> wave;
+    // With the stack or the residue asked for, and tracks aligned to make them from: the curves the combined view draws in place of the tracks.
+    std::vector<Trace> traces;
     // The spectrum and the statistics of the stretch the cursor or the zone stands
     // for.
     std::vector<rfx::Spectrum> spectra;
@@ -137,6 +151,14 @@ public:
     void setRfSpeed(int k, bool on);
     // The waveform of a track with its time base corrected by that curve (it asks for the curve when there is none).
     bool aligned(int k) const;
+    // The combined view with the stack of the aligned tracks (their mean) and the noise it removes, in place of the tracks. The residue is one curve
+    // for all the tracks (the spread of the tracks round the stack) or one for each.
+    bool stackShown() const { return m_stack; }
+    bool residueShown() const { return m_residue; }
+    bool combinedResidue() const { return m_combinedResidue; }
+    void setStackShown(bool on);
+    void setResidueShown(bool on);
+    void setCombinedResidue(bool on);
     void setAligned(int k, bool on);
     // The curve is worked out (whether or not the graph of the speed shows it).
     bool curveReady(int k) const;
@@ -266,6 +288,9 @@ private:
     std::vector<bool> m_rfOn;
     std::vector<bool> m_aligned;
     bool m_alignPlaced = false;
+    bool m_stack = false;
+    bool m_residue = false;
+    bool m_combinedResidue = true;
     void placeAligned();
     QThreadPool m_speedPool;
     std::vector<std::shared_ptr<const SpeedCurve>> m_rfCurves;

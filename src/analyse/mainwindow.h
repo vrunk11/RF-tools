@@ -15,6 +15,8 @@
 
 #include <QMainWindow>
 
+#include <functional>
+
 #include <memory>
 #include <vector>
 
@@ -109,13 +111,14 @@ private:
     void buildMenus();
     QWidget *buildCombined();
     void buildLanes();
-    QCheckBox *alignBox(QWidget *parent, const QVector<int> &tracks);
+    QCheckBox *alignBox(QWidget *parent);
     void chooseFile();
     void chooseFolder();
     void exportYaml();
     void saveSpeed();
     void closeFile();
-    void showMetadata(bool shown);
+    // ollow: the window with it (by the choice of the user, not when a file is opened or the compact mode comes).
+    void showMetadata(bool shown, bool follow = false);
     void updateRecent();
     void rememberRecent(const QStringList &paths);
     void updateNavigation();
@@ -204,6 +207,9 @@ private:
     QMenu *m_recentMenu = nullptr;
     AppearanceMenus *m_appearance = nullptr;
     QAction *m_saveSpeedAction = nullptr;
+    QCheckBox *m_alignBox = nullptr;
+    QCheckBox *m_stackBox = nullptr;
+    QCheckBox *m_residueBox = nullptr;
     QAction *m_exportAction = nullptr;
     QAction *m_closeAction = nullptr;
     QAction *m_metadataAction = nullptr;
@@ -220,4 +226,8 @@ private:
     QToolButton *m_listToggle = nullptr;
     QPushButton *m_infoButton = nullptr;
     void setListShown(bool shown);
+    void resizeWidthBy(int dx);
+    void resizeWithColumn(QWidget *column, int *remembered, bool show, const std::function<void(bool)> &change);
+    int m_listWidth = 0;
+    int m_panelWidth = 0;
 };

@@ -29,6 +29,8 @@ namespace {
 // The decibels the axis covers with a gain of 1.
 constexpr double kSpanDb = 110.0;
 // The margins where the marks of the axes are: on the left the levels, at the bottom the frequencies.
+// The curves of the stack and the residue are numbered from here, after the tracks.
+constexpr int kTraceBase = 1000;
 constexpr int kGutterLeft = 54;
 constexpr int kGutterBottom = 20;
 // About this many marks on each axis.
@@ -138,7 +140,12 @@ void SpectrumView::paintEvent(QPaintEvent *)
     std::map<int, std::shared_ptr<const rfx::Spectrum>> rough;
     const bool late = m_session->coarseWanted();
     bool shownRough = false;
+    // With the stack or the residue asked for, the curves of the combined view are those of the result (numbered from kTraceBase).
+    const bool traceMode = m_tracks.isEmpty() && !r.traces.empty() && (m_session->stackShown() || m_session->residueShown());
     const auto spectrumOf = [&](int k) -> const rfx::Spectrum * {
+        if (k >= kTraceBase) {
+            return static_cast<size_t>(k - kTraceBase) < r.traces.size() ? &r.traces[static_cast<size_t>(k - kTraceBase)].spectrum : nullptr;
+        }
         if (late) {
             auto it = rough.find(k);
             if (it == rough.end()) {
@@ -152,8 +159,22 @@ void SpectrumView::paintEvent(QPaintEvent *)
         return k >= 0 && k < static_cast<int>(r.spectra.size()) ? &r.spectra[static_cast<size_t>(k)] : nullptr;
     };
     QVector<int> tracks = m_tracks;
+    const auto colorOf = [&](int k) {
+        if (k >= kTraceBase) {
+            const Trace &trace = r.traces[static_cast<size_t>(k - kTraceBase)];
+            return trace.track >= 0 ? m_session->color(trace.track) : (trace.band ? pal.color(QPalette::Highlight) : pal.color(QPalette::Text));
+        }
+        return m_session->color(k);
+    };
+    const auto nameOf = [&](int k) {
+        return k >= kTraceBase ? r.traces[static_cast<size_t>(k - kTraceBase)].label : QString::number(k);
+    };
 
-    if (tracks.isEmpty()) {
+    if (traceMode) {
+        for (size_t i = 0; i < r.traces.size(); ++i) {
+            tracks.push_back(kTraceBase + static_cast<int>(i));
+        }
+    } else if (tracks.isEmpty()) {
         for (int k = 0; k < m_session->trackCount(); ++k) {
             if (m_session->visible(k)) {
                 tracks.push_back(k);
@@ -249,7 +270,7 @@ void SpectrumView::paintEvent(QPaintEvent *)
         if (s.db.empty()) {
             continue;
         }
-        QColor c = m_session->color(k);
+        QColor c = colorOf(k);
         const bool primary = k == m_session->selected() && tracks.size() > 1;
         c.setAlpha(primary || tracks.size() == 1 ? 255 : 200);
         p.setPen(QPen(c, primary ? 1.6 : 1.0));
@@ -306,7 +327,7 @@ void SpectrumView::paintEvent(QPaintEvent *)
             if (s.db.empty() || bin >= s.db.size()) {
                 continue;
             }
-            lines.push_back({QStringLiteral("%1: %2 dB").arg(k).arg(QString::number(static_cast<double>(s.db[bin]), 'f', 1)), m_session->color(k)});
+            lines.push_back({QStringLiteral("%1: %2 dB").arg(nameOf(k)).arg(QString::number(static_cast<double>(s.db[bin]), 'f', 1)), colorOf(k)});
         }
         drawReadout(p, QRect(L, 0, pw, h), m_hover, lines);
     }

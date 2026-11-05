@@ -59,6 +59,8 @@ private:
     qint64 sampleAt(double x) const;
     double xOf(qint64 sample) const;
     QVector<int> drawn() const;
+    // The view of all the tracks shown (not one of a lane): the one that has the stack and the residue.
+    bool isCombined() const { return m_tracks.isEmpty(); }
 
     Session *m_session;
     QVector<int> m_tracks;

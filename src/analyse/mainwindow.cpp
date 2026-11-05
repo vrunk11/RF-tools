@@ -245,7 +245,7 @@ MainWindow::MainWindow() : m_session(new Session(this))
     connect(addButton, &QPushButton::clicked, this, &MainWindow::addFiles);
     connect(m_infoButton, &QPushButton::toggled, this, [this](bool on) {
         if (on != m_panelShown) {
-            showMetadata(on);
+            showMetadata(on, true);
         }
     });
     m_listColumn = left;
@@ -279,7 +279,7 @@ MainWindow::MainWindow() : m_session(new Session(this))
     panelLayout->addWidget(panelHead);
     panelLayout->addWidget(m_metadata, 1);
     m_panel->setMinimumWidth(kMetadataWidth);
-    connect(panelClose, &QToolButton::clicked, this, [this] { showMetadata(false); });
+    connect(panelClose, &QToolButton::clicked, this, [this] { showMetadata(false, true); });
 
     auto *right = new QWidget(split);
     auto *rightLayout = new QVBoxLayout(right);
@@ -298,6 +298,58 @@ MainWindow::MainWindow() : m_session(new Session(this))
     m_tabs->setExpanding(false);
     m_tabs->setDrawBase(false);
     tabLayout->addWidget(m_tabs);
+    // The correction of the time base is of every view: its box is by the tabs, with the two that depend on it (the stack and the noise it
+    // removes, which only the combined view shows).
+    tabLayout->addSpacing(12);
+    m_alignBox = alignBox(tabRow);
+    tabLayout->addWidget(m_alignBox);
+    m_stackBox = new QCheckBox(tr("Stack"), tabRow);
+    m_stackBox->setObjectName(QStringLiteral("stackBox"));
+    m_stackBox->setToolTip(tr("Show the stack in place of the tracks: the mean of the tracks shown once their time base is corrected (the waveform and the spectrum). Combined view only."));
+    tabLayout->addWidget(m_stackBox);
+    m_residueBox = new QCheckBox(tr("Noise residue"), tabRow);
+    m_residueBox->setObjectName(QStringLiteral("residueBox"));
+    m_residueBox->setToolTip(tr("Show the noise the stack removes in place of the tracks: what each track has more than the stack (a curve for each, or one for all of them: View > Show combined residue). Combined view only."));
+    tabLayout->addWidget(m_residueBox);
+    // Both need the time base corrected: ticking one ticks the box Align capture (and asks for the lines of pass 0 it needs), unticking that unticks both.
+    const auto askedWithAlign = [this](QCheckBox *box, void (Session::*set)(bool)) {
+        connect(box, &QCheckBox::toggled, this, [this, box, set](bool on) {
+            if (on && !m_alignBox->isChecked()) {
+                m_alignBox->setChecked(true);
+            }
+            const bool really = on && m_alignBox->isChecked();
+            if (box->isChecked() != really) {
+                const QSignalBlocker block(box);
+                box->setChecked(really);
+            }
+            (m_session->*set)(really);
+        });
+    };
+    askedWithAlign(m_stackBox, &Session::setStackShown);
+    askedWithAlign(m_residueBox, &Session::setResidueShown);
+    connect(m_alignBox, &QCheckBox::toggled, this, [this](bool on) {
+        if (!on) {
+            m_stackBox->setChecked(false);
+            m_residueBox->setChecked(false);
+        }
+    });
+    // With the stack or the residue on, the time base is corrected whatever is asked: the box Align capture is greyed. With one track alone
+    // there is nothing to stack, and the two boxes are greyed.
+    const auto enableBoxes = [this] {
+        const bool several = m_session->trackCount() > 1;
+        if (!several) {
+            m_stackBox->setChecked(false);
+            m_residueBox->setChecked(false);
+        }
+        m_stackBox->setEnabled(several);
+        m_residueBox->setEnabled(several);
+        m_alignBox->setEnabled(!m_stackBox->isChecked() && !m_residueBox->isChecked());
+    };
+    connect(m_stackBox, &QCheckBox::toggled, this, enableBoxes);
+    connect(m_residueBox, &QCheckBox::toggled, this, enableBoxes);
+    connect(m_session, &Session::opened, this, enableBoxes);
+    connect(m_session, &Session::closed, this, enableBoxes);
+    enableBoxes();
     tabLayout->addStretch();
     m_modeBox = new QWidget(tabRow);
     auto *modeLayout = new QHBoxLayout(m_modeBox);
@@ -314,6 +366,8 @@ MainWindow::MainWindow() : m_session(new Session(this))
         modeLayout->addWidget(b);
     }
     tabLayout->addWidget(m_modeBox);
+    // (the row is as tall in every view, whatever it shows: the graphs below do not change size with the tab)
+    tabRow->setMinimumHeight(std::max({m_alignBox->sizeHint().height(), m_tabs->sizeHint().height(), m_modeBox->sizeHint().height()}) + tabLayout->contentsMargins().top() + tabLayout->contentsMargins().bottom());
     rightLayout->addWidget(tabRow);
     // The zoom: small buttons in the block of the graph (placed by placeZoomBar), not a row of their own.
     m_zoomBar = new QWidget(right);
@@ -426,8 +480,9 @@ MainWindow::MainWindow() : m_session(new Session(this))
     // A mini arrow that is beside the title of the first panel shown: Tracks, else Source, else the tabs.
     m_listToggle->setFixedSize(18, 18);
     m_listToggle->setObjectName(QStringLiteral("listToggle"));
-    connect(m_listToggle, &QToolButton::clicked, this, [this] { setListShown(!m_listColumn->isVisible()); });
-    pageLayout->addWidget(split, 1);
+    connect(m_listToggle, &QToolButton::clicked, this, [this] {
+        resizeWithColumn(m_listColumn, &m_listWidth, !m_listColumn->isVisible(), [this](bool on) { setListShown(on); });
+    });    pageLayout->addWidget(split, 1);
     m_pages->addWidget(page);
     applyPanels();
     setListShown(true);
@@ -455,10 +510,10 @@ MainWindow::MainWindow() : m_session(new Session(this))
 
     connect(m_tracks, &TrackList::rowClicked, this, [this](int row, bool wasSelected) {
         if (wasSelected) {
-            showMetadata(!m_panelShown);
+            showMetadata(!m_panelShown, true);
         } else {
             m_session->setSelected(row);
-            showMetadata(true);
+            showMetadata(true, true);
         }
     });
     connect(m_tabs, &QTabBar::currentChanged, this, [this](int) { updateViews(); });
@@ -557,15 +612,15 @@ MainWindow::~MainWindow()
 // The box "Align capture" of a waveform: the time base of its tracks corrected (from the lines of pass 0, the ones the graph of the speed is
 // made from), the tracks shown when `tracks` is empty. It stays on for the tracks that are shown afterwards (a track ticked in the list is
 // aligned too). Without the lines of a track, it asks whether to work them out, for the tracks wanted only.
-QCheckBox *MainWindow::alignBox(QWidget *parent, const QVector<int> &tracks)
+QCheckBox *MainWindow::alignBox(QWidget *parent)
 {
     auto *box = new QCheckBox(tr("Align capture"), parent);
     box->setObjectName(QStringLiteral("alignBox"));
     box->setToolTip(tr("Correct the time base of the capture, as before stacking: every line at its place at the nominal speed, the same place in every capture. The waveform, the spectrum and the statistics are those of the resampled signal. It needs the lines of pass 0 (the curve of the graph of the speed); without them it proposes to work them out for the tracks shown."));
-    const auto wanted = [this, tracks] {
+    const auto wanted = [this] {
         QVector<int> out;
         for (int k = 0; k < m_session->trackCount(); ++k) {
-            if (tracks.isEmpty() ? m_session->visible(k) : tracks.contains(k)) {
+            if (m_session->visible(k)) {
                 out.push_back(k);
             }
         }
@@ -684,7 +739,6 @@ QWidget *MainWindow::buildCombined()
         m_waveReduced = reduced;
         applyPanels();
     }));
-    m_waveHeadLayout->insertWidget(2, alignBox(waveHead, {}));
     m_panelHead[kPanelWave] = waveHead;
     m_panelBody[kPanelWave] = waveFrame;
 
@@ -873,7 +927,6 @@ void MainWindow::buildLanes()
         headRow->addWidget(name);
         QToolButton *waveToggle = makeCollapseButton(head, nullptr);
         headRow->addWidget(waveToggle);
-        headRow->addWidget(alignBox(head, {k}));
         headRow->addStretch();
         headRow->addWidget(info);
         if (k == tracks.first() && !m_allLanes) {
@@ -1040,6 +1093,38 @@ void MainWindow::resizeBy(int dy)
     });
 }
 
+// The same across: the window as wide as the list of tracks it shows or puts away (not when it is maximised).
+void MainWindow::resizeWidthBy(int dx)
+{
+    if (dx == 0 || isMaximized() || isFullScreen() || m_pages->currentIndex() != 1) {
+        return;
+    }
+    QTimer::singleShot(0, this, [this, dx] {
+        resize(std::max(minimumSizeHint().width(), width() + dx), height());
+    });
+}
+
+// A column at the side that comes or goes by the choice of the user, and the window with it: as wide as the column was when it goes, and as wide
+// again when it comes back (what it takes once it is laid out, the splitter handle with it). `change` shows or hides it.
+void MainWindow::resizeWithColumn(QWidget *column, int *remembered, bool show, const std::function<void(bool)> &change)
+{
+    const auto *splitter = qobject_cast<QSplitter *>(column->parentWidget());
+    const int handle = splitter ? splitter->handleWidth() : 0;
+    if (!show) {
+        *remembered = column->width() + handle;
+        change(false);
+        resizeWidthBy(-*remembered);
+        return;
+    }
+    change(true);
+    QTimer::singleShot(0, this, [this, column, remembered, handle] {
+        *remembered = column->width() + handle;
+        if (!isMaximized() && !isFullScreen() && m_pages->currentIndex() == 1) {
+            resize(std::max(minimumSizeHint().width(), width() + *remembered), height());
+        }
+    });
+}
+
 void MainWindow::panelReducing(int panel, bool reduced, int bodyHeight)
 {
     constexpr int kGap = 4;
@@ -1144,7 +1229,7 @@ void MainWindow::buildMenus()
     m_metadataAction->setShortcut(QKeySequence(Qt::Key_I));
     connect(m_metadataAction, &QAction::toggled, this, [this](bool on) {
         if (on != m_panelShown) {
-            showMetadata(on);
+            showMetadata(on, true);
         }
     });
     view->addAction(tr("&Reset zoom"), this, [this] { m_session->resetZoom(); });
@@ -1161,6 +1246,18 @@ void MainWindow::buildMenus()
         for (WaveformView *w : m_laneHost->findChildren<WaveformView *>()) {
             w->setFollowSize(on);
         }
+    });
+    // The noise the stack removes (Noise residue): on (as it starts), one curve for all the tracks, the spread of the tracks round the stack;
+    // off, a curve for each track, in its colour.
+    QAction *combinedResidue = view->addAction(tr("Show combined residue"));
+    combinedResidue->setObjectName(QStringLiteral("combinedResidue"));
+    combinedResidue->setCheckable(true);
+    combinedResidue->setChecked(QSettings().value(QStringLiteral("combinedResidue"), true).toBool());
+    m_session->setCombinedResidue(combinedResidue->isChecked());
+    combinedResidue->setToolTip(tr("On: the noise residue is one curve for all the tracks (their spread round the stack). Off: one curve for each track, in its colour."));
+    connect(combinedResidue, &QAction::toggled, this, [this](bool on) {
+        QSettings().setValue(QStringLiteral("combinedResidue"), on);
+        m_session->setCombinedResidue(on);
     });
     // The spectrum can be normalised (the decibels it covers stay, the curve is stretched with the graph), or not: then
     // only the coordinates change, and a taller graph covers more decibels.
@@ -1212,8 +1309,12 @@ void MainWindow::buildMenus()
     });
 }
 
-void MainWindow::showMetadata(bool shown)
+void MainWindow::showMetadata(bool shown, bool follow)
 {
+    if (follow && shown != m_panelShown) {
+        resizeWithColumn(m_panel, &m_panelWidth, shown, [this](bool on) { showMetadata(on, false); });
+        return;
+    }
     m_panelShown = shown;
     placeListToggle();
     m_panel->setVisible(shown);
@@ -1237,6 +1338,9 @@ void MainWindow::updateViews()
         m_views->widget(i)->setSizePolicy(current ? QSizePolicy::Preferred : QSizePolicy::Ignored, current ? QSizePolicy::Preferred : QSizePolicy::Ignored);
     }
     m_modeBox->setVisible(individual);
+    // (the stack and its residue are of the combined view)
+    m_stackBox->setVisible(!individual);
+    m_residueBox->setVisible(!individual);
     if (individual) {
         buildLanes();
     }

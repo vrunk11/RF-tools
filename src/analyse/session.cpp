@@ -59,7 +59,7 @@ float cubic(float a, float b, float c, float d, double t)
 
 // The samples of a track over [start, start + count) of its corrected time, in the units of a converter of its bits: the track is read
 // where its corrected time is (a cubic through four samples), and is zero where it is not there.
-std::vector<double> readCorrected(rfx::TrackReader &reader, size_t local, const rfx::SourceMeta &sm, const TimeBase &base, qint64 start, qint64 count, int bits)
+std::vector<double> readCorrected(rfx::TrackReader &reader, size_t local, const rfx::SourceMeta &sm, const TimeBase &base, qint64 start, qint64 count, int bits, std::vector<char> *valid = nullptr)
 {
     const double first = base.sourceAt(static_cast<double>(start));
     const double last = base.sourceAt(static_cast<double>(start + count - 1));
@@ -76,8 +76,15 @@ std::vector<double> readCorrected(rfx::TrackReader &reader, size_t local, const 
     }
     const auto at = [&](qint64 index) { return index >= from && index < to ? source[static_cast<size_t>(index - from)] : 0.0f; };
     std::vector<double> out(static_cast<size_t>(count));
+    if (valid) {
+        valid->assign(static_cast<size_t>(count), 0);
+    }
     for (qint64 i = 0; i < count; ++i) {
         const double x = base.sourceAt(static_cast<double>(start + i));
+        if (valid) {
+            // (where the capture is: before it began and after it ended there is nothing, which is not a signal of zero)
+            (*valid)[static_cast<size_t>(i)] = x >= 0.0 && x <= static_cast<double>(sm.words) - 1.0 ? 1 : 0;
+        }
         const qint64 j = static_cast<qint64>(std::floor(x));
         out[static_cast<size_t>(i)] = cubic(at(j - 1), at(j), at(j + 1), at(j + 2), x - static_cast<double>(j));
     }
@@ -111,8 +118,153 @@ struct Request
     double rateHz = kDefaultRateHz;
     std::vector<bool> visible;
     std::vector<TrackSource> tracks;
+    bool stack = false;
+    bool residue = false;
+    bool combinedResidue = true;
 };
 
+// The stack of the aligned tracks shown (their mean), and the noise it removes: for the waveform, over the window, and for the spectrum, over
+// the stretch round the bar (the part of it all of them have). The residue of a track is what it has more than the stack; the one of all of them
+// is their spread round it (the standard deviation), drawn as a band, and its spectrum the mean of the spectra of the residues.
+void makeTraces(const Request &q, AnalysisResult &r, const std::vector<std::vector<char>> &validity, const std::atomic<quint64> &current)
+{
+    // Only when every track shown has its time base: with some still being worked out, a stack of the others would be a stack of part of them.
+    std::vector<size_t> part;
+    for (size_t k = 0; k < q.tracks.size(); ++k) {
+        if (!q.visible[k]) {
+            continue;
+        }
+        if (!q.tracks[k].base || k >= r.wave.size() || r.wave[k].empty() || validity[k].size() != r.wave[k].size()) {
+            return;
+        }
+        part.push_back(k);
+    }
+    if (part.empty()) {
+        return;
+    }
+    const size_t n = static_cast<size_t>(q.windowLength);
+    // At each sample the mean, the residues and their spread are of the tracks that have it (all of them but near the ends of a capture).
+    std::vector<float> stack(n, 0.0F);
+    std::vector<int> have(n, 0);
+    for (const size_t k : part) {
+        for (size_t i = 0; i < n; ++i) {
+            if (validity[k][i]) {
+                stack[i] += r.wave[k][i];
+                ++have[i];
+            }
+        }
+    }
+    for (size_t i = 0; i < n; ++i) {
+        stack[i] = have[i] ? stack[i] / static_cast<float>(have[i]) : 0.0F;
+    }
+    std::vector<std::vector<float>> residues;
+    for (const size_t k : part) {
+        std::vector<float> res(n, 0.0F);
+        for (size_t i = 0; i < n; ++i) {
+            if (validity[k][i]) {
+                res[i] = r.wave[k][i] - stack[i];
+            }
+        }
+        residues.push_back(std::move(res));
+    }
+    std::vector<float> spread(n, 0.0F);
+    for (size_t i = 0; i < n; ++i) {
+        if (have[i] > 1) {
+            double sum = 0.0;
+            for (size_t j = 0; j < part.size(); ++j) {
+                if (validity[part[j]][i]) {
+                    sum += static_cast<double>(residues[j][i]) * residues[j][i];
+                }
+            }
+            spread[i] = static_cast<float>(std::sqrt(sum / static_cast<double>(have[i] - 1)));
+        }
+    }
+    // The spectra, over the stretch all of them have.
+    const qint64 from = q.analysedCenter - q.analysedLength / 2;
+    qint64 lo = from;
+    qint64 hi = from + q.analysedLength;
+    for (const size_t k : part) {
+        const TimeBase &base = *q.tracks[k].base;
+        const double words = static_cast<double>(q.tracks[k].reader->meta().sources[q.tracks[k].local].words);
+        while (lo < hi && base.sourceAt(static_cast<double>(lo)) < 0.0) {
+            lo += std::max<qint64>(1, (hi - lo) / 64);
+        }
+        while (hi > lo && base.sourceAt(static_cast<double>(hi)) > words) {
+            hi -= std::max<qint64>(1, (hi - lo) / 64);
+        }
+    }
+    std::vector<rfx::Spectrum> stackSpectrum(1);
+    std::vector<rfx::Spectrum> residueSpectra;
+    if (hi - lo >= kMinimumRange && current.load() == q.generation) {
+        const rfx::SourceMeta &first = q.tracks[part.front()].reader->meta().sources[q.tracks[part.front()].local];
+        const int ownBits = rfx::carriedBits(first.format(), first.shift);
+        const double rate = first.rateHz > 0 ? first.rateHz : q.rateHz;
+        std::vector<std::vector<double>> xs;
+        for (const size_t k : part) {
+            const rfx::SourceMeta &sm = q.tracks[k].reader->meta().sources[q.tracks[k].local];
+            xs.push_back(readCorrected(*q.tracks[k].reader, q.tracks[k].local, sm, *q.tracks[k].base, lo, hi - lo, ownBits));
+        }
+        std::vector<double> mean(xs.front().size(), 0.0);
+        for (const auto &x : xs) {
+            for (size_t i = 0; i < mean.size(); ++i) {
+                mean[i] += x[i] / static_cast<double>(xs.size());
+            }
+        }
+        const double fullScale = std::ldexp(1.0, ownBits - 1);
+        stackSpectrum[0] = rfx::analyseSpectrum(mean, static_cast<size_t>(q.fftSize), rate, fullScale);
+        if (q.residue) {
+            for (const auto &x : xs) {
+                std::vector<double> res(x.size());
+                for (size_t i = 0; i < res.size(); ++i) {
+                    res[i] = x[i] - mean[i];
+                }
+                residueSpectra.push_back(rfx::analyseSpectrum(res, static_cast<size_t>(q.fftSize), rate, fullScale));
+            }
+        }
+    }
+
+    if (q.stack) {
+        Trace t;
+        t.label = QObject::tr("stack");
+        t.wave = std::move(stack);
+        t.spectrum = std::move(stackSpectrum[0]);
+        r.traces.push_back(std::move(t));
+    }
+    if (q.residue) {
+        if (q.combinedResidue) {
+            Trace t;
+            t.label = QObject::tr("residue");
+            t.band = true;
+            t.wave = std::move(spread);
+            if (!residueSpectra.empty()) {
+                // (the mean, bin by bin, of the spectra of the residues)
+                t.spectrum = residueSpectra.front();
+                for (size_t b = 0; b < t.spectrum.db.size(); ++b) {
+                    double db = 0.0;
+                    double power = 0.0;
+                    for (const auto &s : residueSpectra) {
+                        db += static_cast<double>(s.db[b]) / static_cast<double>(residueSpectra.size());
+                        power += s.power[b] / static_cast<double>(residueSpectra.size());
+                    }
+                    t.spectrum.db[b] = static_cast<float>(db);
+                    t.spectrum.power[b] = power;
+                }
+            }
+            r.traces.push_back(std::move(t));
+        } else {
+            for (size_t j = 0; j < part.size(); ++j) {
+                Trace t;
+                t.track = static_cast<int>(part[j]);
+                t.label = QObject::tr("residue %1").arg(part[j]);
+                t.wave = std::move(residues[j]);
+                if (j < residueSpectra.size()) {
+                    t.spectrum = std::move(residueSpectra[j]);
+                }
+                r.traces.push_back(std::move(t));
+            }
+        }
+    }
+}
 AnalysisResult compute(const Request &q, const std::atomic<quint64> &current)
 {
     AnalysisResult r;
@@ -127,6 +279,7 @@ AnalysisResult compute(const Request &q, const std::atomic<quint64> &current)
     r.spectra.resize(tracks);
     r.stats.resize(tracks);
     r.pastEnd.assign(tracks, false);
+    std::vector<std::vector<char>> validity(tracks);
 
     // What is made for one track: its samples over the window, and its spectrum and statistics over the stretch.
     const auto work = [&](size_t k) {
@@ -138,7 +291,7 @@ AnalysisResult compute(const Request &q, const std::atomic<quint64> &current)
 
         if (q.tracks[k].base) {
             // The time base corrected: the window is of the corrected time, and the track is read where that time is.
-            const std::vector<double> samples = readCorrected(reader, local, sm, *q.tracks[k].base, q.windowStart, q.windowLength, q.displayBits);
+            const std::vector<double> samples = readCorrected(reader, local, sm, *q.tracks[k].base, q.windowStart, q.windowLength, q.displayBits, &validity[k]);
             r.wave[k].assign(samples.begin(), samples.end());
         } else {
             raw.assign(static_cast<size_t>(q.windowLength), 0);
@@ -228,9 +381,11 @@ AnalysisResult compute(const Request &q, const std::atomic<quint64> &current)
         helper.join();
     }
     r.error = failure;
+    if ((q.stack || q.residue) && failure.isEmpty() && current.load() == q.generation) {
+        makeTraces(q, r, validity, current);
+    }
     return r;
 }
-
 } // namespace
 
 Session::Session(QObject *parent) : QObject(parent)
@@ -427,6 +582,8 @@ void Session::setVisible(int k, bool on)
         return;
     }
     m_visible[static_cast<size_t>(k)] = on;
+    m_alignPlaced = false;
+    placeAligned();   // (the tracks shown are not the same: neither is the place where all of them are)
     emit changed();
     refresh();
 }
@@ -667,6 +824,9 @@ void Session::refresh()
     q.displayBits = m_displayBits;
     q.rateHz = m_rateHz;
     q.visible = m_visible;
+    q.stack = m_stack;
+    q.residue = m_residue;
+    q.combinedResidue = m_combinedResidue;
     for (size_t k = 0; k < m_tracks.size(); ++k) {
         const TrackRef &t = m_tracks[k];
         q.tracks.push_back({m_sources[static_cast<size_t>(t.source)].reader.get(), t.local, aligned(static_cast<int>(k)) ? timebaseOf(static_cast<int>(k)) : nullptr});
@@ -922,6 +1082,33 @@ std::shared_ptr<const TimeBase> Session::timebaseOf(int k)
     return m_timebases[static_cast<size_t>(k)];
 }
 
+void Session::setStackShown(bool on)
+{
+    if (on != m_stack) {
+        m_stack = on;
+        emit changed();
+        refresh();
+    }
+}
+
+void Session::setResidueShown(bool on)
+{
+    if (on != m_residue) {
+        m_residue = on;
+        emit changed();
+        refresh();
+    }
+}
+
+void Session::setCombinedResidue(bool on)
+{
+    if (on != m_combinedResidue) {
+        m_combinedResidue = on;
+        emit changed();
+        refresh();
+    }
+}
+
 bool Session::aligned(int k) const
 {
     return k >= 0 && static_cast<size_t>(k) < m_aligned.size() && m_aligned[static_cast<size_t>(k)];
@@ -973,6 +1160,10 @@ void Session::placeAligned()
     m_alignPlaced = true;
     if (static_cast<double>(m_windowStart) < common) {
         setWindowStart(static_cast<qint64>(std::ceil(common)));
+    }
+    // (the spectrum and the statistics are of the stretch round the bar: it has to be where the captures are too)
+    if (static_cast<double>(m_cursor) < common) {
+        setCursor(m_windowStart + m_windowLength / 2, false);
     }
 }
 

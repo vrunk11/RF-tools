@@ -37,7 +37,7 @@ move. A file of many gigabytes opens at once.
 
 | Where | What |
 | --- | --- |
-| Left | **Tracks**: a check box (show or hide the track in the views), the colour of the track, its name, and its duration and what it takes in the file. A click on a track selects it and shows its metadata; a click on the selected track hides them |
+| Left | **Tracks**: a check box (show or hide the track in the views), the colour of the track, its name, and its duration and what it takes in the file. A click on a track selects it and shows its metadata; a click on the selected track hides them. The arrow beside the title puts the list away or brings it back, and the window gets narrower or wider by the width of the list (not when it is maximised); the same for the panel of metadata on the other side, whether it is put away by its cross, by the Info button, by a click on the selected track or by the menu (a file opened, or the compact mode, does not resize it) |
 | Next to it | **Source**: the metadata of the selected track, in sections that fold: *File* (name, size, size stored in the `.rfx`, SHA-256, sidecar), *Capture* (when it was captured, from the `.yaml`; the date of the file when it was packed; and the notes, a free text that [rf-packer](rf-packer.md) can write), then a section for each part of the `.yaml` that has something in it (*Sidecar*: the version of the application; *Capture settings*: the input range, the decimation and the like; *Signal*: the minimum, maximum and rms, the clipped samples; *Requantization*, *Board*, *Device*, *Player*, *Disc*), *Samples* (duration, count, rate, format, shift and mean, bits carried) and *Coding* (order, references and weights, predictor, speed at the bar and its range, lag at the bar, origin) |
 | Right, tabs | **Combined**: every track shown, superposed. **Individual**: *Selected* shows the track selected alone; *All lanes* one lane for each track shown |
 | Zoom bar | Zoom out, zoom in, *Fit*; the width of the window in samples and microseconds; the vertical zoom of the waveform (×1 to ×8) |
@@ -63,16 +63,22 @@ move. A file of many gigabytes opens at once.
   Save speed curve** (for an `.rfx` file of the predictor variant) adds the lines of pass 0 to the end of the file (a few megabytes at
   most, nothing else is rewritten; specification 3.1) and they are there at once when it is opened again; rf-packer does the same for a file
   (**File > Compute the pass 0 curve**, or the box of the options when it writes one).
-- **Align capture** (a box in the heading of each waveform: of the combined view for the tracks shown, of a lane for its track): the
-  time base of each capture corrected, as before stacking them. The signal is resampled (a cubic through four samples) so that each
-  line is at its place at the nominal speed, and the place is the same in every capture: a field takes the place the field with the
-  same frame code has in the first track, so that the captures are lined up with one another (on a test, the correlation of two captures
-  over a window goes from 0.01 to 0.998). The waveform, the spectrum and the statistics are all those of the corrected signal. It needs the
-  pass 0 curve of the track and of the first one (which gives the axis): the program asks whether to work out the ones that are missing,
-  for the tracks shown only (the first one is worked out too, when it is not shown, and the message says so), and the box takes effect
-  when it is done. The box stays on for the tracks that are shown afterwards: a track ticked in the list while it is on is aligned too, and
-  asked for when it has no curve. The captures do not all begin at the same place of the disc, and on the corrected time one that began later has nothing before it: once the tracks shown have their time base, a window that lies before the place where all of them are is moved to it.
-- **Speed deviation over time**: how fast or slow each track runs, in parts per million, over the whole capture, from its pass 0 curve: at
+- **Align capture**, **Stack** and **Noise residue** (three boxes by the tabs: they are of every view, not of one graph). *Align capture*
+  corrects the time base of the tracks shown, as before stacking them. The signal is resampled (a cubic through four samples) so that
+  each line is at its place at the nominal speed, and the place is the same in every capture: a field takes the place the field with
+  the same frame code has in the first track, so that the captures are lined up with one another (on a test, the correlation of two
+  captures over a window goes from 0.01 to 0.998). The waveform, the spectrum and the statistics are all those of the corrected signal.
+  It needs the pass 0 curve of the tracks and of the first one (which gives the axis): the program asks whether to work out the ones that
+  are missing, for the tracks shown only (the first one is worked out too, when it is not shown, and the message says so), and the box takes
+  effect when it is done. The box stays on for the tracks that are shown afterwards: a track ticked in the list while it is on is aligned
+  too, and asked for when it has no curve. The captures do not all begin at the same place of the disc, and on the corrected time one that
+  began later has nothing before it: once the tracks shown have their time base, a window that lies before the place where all of them are
+  is moved to it (the bar with it).
+  *Stack* shows the stack in place of the tracks: the mean of the tracks shown once their time base is corrected, in the waveform and in the
+  spectrum. *Noise residue* shows the noise the stack removes: **View > Show combined residue** (on to begin with) makes it one curve for all
+  the tracks, their spread round the stack (the standard deviation, drawn as a band on both sides of 0, and the mean of the spectra of the
+  residues); off, a curve for each track, in its colour (what that capture has more than the stack). Both can be on at once. They are shown by
+  the combined view only (the boxes are not there in the individual one), and ticking one ticks *Align capture*, which is then greyed (the time base is corrected whatever is asked while either is on); unticking the last of them frees it. With one track alone there is nothing to stack, and the two boxes are greyed. The statistics stay those of the tracks. Nothing is stacked beforehand: the stack and the residue are made for what is on the screen, from the corrected tracks over the window (and, for the spectrum, over the stretch round the bar), at each change of the window; the only thing that takes long is the pass 0 curve, once per track. At a place that only some of the tracks have (near the ends of a capture) they are made from those. While a track shown has no curve yet nothing is stacked: the tracks are drawn as they are.- **Speed deviation over time**: how fast or slow each track runs, in parts per million, over the whole capture, from its pass 0 curve: at
   each field, the spacing of the lines against the nominal one (63.556 us NTSC, 64 us PAL), averaged over a few hundredths of the
   capture. Above 0 is faster, below is slower. It is **not there until asked for**: the **From RF** box in the title bar of the block
   (off to begin with; `--rf-speed` on the command line, for the track of `--track`) asks for the curve. Any track can have one, the

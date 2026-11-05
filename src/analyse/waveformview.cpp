@@ -207,54 +207,78 @@ void WaveformView::paintEvent(QPaintEvent *)
     const AnalysisResult &r = m_session->result();
     const double n = static_cast<double>(m_session->windowLength());
     const QVector<int> tracks = drawn();
-    for (int k : tracks) {
-        if (k >= static_cast<int>(r.wave.size()) || r.wave[static_cast<size_t>(k)].empty()) {
-            continue;
-        }
-        const std::vector<float> &y = r.wave[static_cast<size_t>(k)];
-        // A track shorter than the longest ends where it ends: nothing is drawn after.
-        const qint64 words = static_cast<qint64>(m_session->track(k).words);
-        const size_t inside = static_cast<size_t>(std::clamp<qint64>(words - r.windowStart, 0, static_cast<qint64>(y.size())));
-        QColor c = m_session->color(k);
-        const bool primary = k == m_session->selected() && tracks.size() > 1;
-        c.setAlpha(primary || tracks.size() == 1 ? 255 : 200);
-        p.setPen(QPen(c, primary ? 1.6 : 1.0));
-        const auto yOf = [&](double v) { return std::clamp(h / 2.0 - v / full * h / 2.0, 0.0, static_cast<double>(h)); };
-        const double perPixel = n / std::max(1, pw);
-        if (perPixel < 2.0) {
+    const auto yOf = [&](double v) { return std::clamp(h / 2.0 - v / full * h / 2.0, 0.0, static_cast<double>(h)); };
+    const double perPixel = n / std::max(1, pw);
+    // A curve: its samples from the start of the window, as many as are inside the track; a line, or a band of the width of the value either side of 0.
+    const auto drawSeries = [&](const std::vector<float> &y, size_t inside, const QColor &color, double width, bool band) {
+        if (perPixel < 2.0 && !band) {
+            p.setPen(QPen(color, width));
             QPainterPath path;
             for (size_t i = 0; i < inside; ++i) {
                 const QPointF pt(xOf(r.windowStart + static_cast<qint64>(i)), yOf(y[i]));
                 i ? path.lineTo(pt) : path.moveTo(pt);
             }
             p.drawPath(path);
-        } else {
-            // More samples than pixels: the extremes of each column.
-            std::vector<float> lows(static_cast<size_t>(pw), 1e30F), highs(static_cast<size_t>(pw), -1e30F);
-            for (size_t i = 0; i < inside; ++i) {
-                const int x = static_cast<int>(xOf(r.windowStart + static_cast<qint64>(i))) - L;
-                if (x < 0 || x >= pw) {
-                    continue;
-                }
-                lows[static_cast<size_t>(x)] = std::min(lows[static_cast<size_t>(x)], y[i]);
-                highs[static_cast<size_t>(x)] = std::max(highs[static_cast<size_t>(x)], y[i]);
+            return;
+        }
+        // More samples than pixels (or a band): the extremes of each column.
+        std::vector<float> lows(static_cast<size_t>(pw), 1e30F), highs(static_cast<size_t>(pw), -1e30F);
+        for (size_t i = 0; i < inside; ++i) {
+            const int x = static_cast<int>(xOf(r.windowStart + static_cast<qint64>(i))) - L;
+            if (x < 0 || x >= pw) {
+                continue;
             }
-            for (int x = 0; x < pw; ++x) {
-                if (highs[static_cast<size_t>(x)] >= lows[static_cast<size_t>(x)]) {
-                    p.drawLine(QPointF(L + x + 0.5, yOf(highs[static_cast<size_t>(x)])), QPointF(L + x + 0.5, yOf(lows[static_cast<size_t>(x)])));
-                }
+            lows[static_cast<size_t>(x)] = std::min(lows[static_cast<size_t>(x)], y[i]);
+            highs[static_cast<size_t>(x)] = std::max(highs[static_cast<size_t>(x)], y[i]);
+        }
+        for (int x = 0; x < pw; ++x) {
+            if (highs[static_cast<size_t>(x)] < lows[static_cast<size_t>(x)]) {
+                continue;
+            }
+            if (band) {
+                // (the spread: from minus its largest in the column to plus it)
+                QColor fill = color;
+                fill.setAlpha(110);
+                p.setPen(QPen(fill, 1));
+                p.drawLine(QPointF(L + x + 0.5, yOf(highs[static_cast<size_t>(x)])), QPointF(L + x + 0.5, yOf(-highs[static_cast<size_t>(x)])));
+            } else {
+                p.setPen(QPen(color, width));
+                p.drawLine(QPointF(L + x + 0.5, yOf(highs[static_cast<size_t>(x)])), QPointF(L + x + 0.5, yOf(lows[static_cast<size_t>(x)])));
             }
         }
-        // Where this track ends, when that is on the screen: a dashed line in its colour.
-        if (words > r.windowStart && words < r.windowStart + static_cast<qint64>(y.size())) {
-            QPen dashed(m_session->color(k), 1.2, Qt::DashLine);
-            p.setPen(dashed);
-            const double ex = xOf(words);
-            p.drawLine(QPointF(ex, 0), QPointF(ex, h));
-            p.drawText(QPointF(std::min(ex + 3, static_cast<double>(w - 60)), 12 + 12 * (k % 4)), tr("end of %1").arg(k));
+    };
+    if (isCombined() && !r.traces.empty() && (m_session->stackShown() || m_session->residueShown())) {
+        // The stack and the noise it removes, in place of the tracks.
+        for (const Trace &trace : r.traces) {
+            QColor c = trace.track >= 0 ? m_session->color(trace.track) : pal.color(QPalette::Text);
+            if (trace.band) {
+                c = pal.color(QPalette::Highlight);
+            }
+            drawSeries(trace.wave, trace.wave.size(), c, trace.track < 0 && !trace.band ? 1.6 : 1.0, trace.band);
+        }
+    } else {
+        for (int k : tracks) {
+            if (k >= static_cast<int>(r.wave.size()) || r.wave[static_cast<size_t>(k)].empty()) {
+                continue;
+            }
+            const std::vector<float> &y = r.wave[static_cast<size_t>(k)];
+            // A track shorter than the longest ends where it ends: nothing is drawn after.
+            const qint64 words = static_cast<qint64>(m_session->track(k).words);
+            const size_t inside = static_cast<size_t>(std::clamp<qint64>(words - r.windowStart, 0, static_cast<qint64>(y.size())));
+            QColor c = m_session->color(k);
+            const bool primary = k == m_session->selected() && tracks.size() > 1;
+            c.setAlpha(primary || tracks.size() == 1 ? 255 : 200);
+            drawSeries(y, inside, c, primary ? 1.6 : 1.0, false);
+            // Where this track ends, when that is on the screen: a dashed line in its colour.
+            if (words > r.windowStart && words < r.windowStart + static_cast<qint64>(y.size())) {
+                QPen dashed(m_session->color(k), 1.2, Qt::DashLine);
+                p.setPen(dashed);
+                const double ex = xOf(words);
+                p.drawLine(QPointF(ex, 0), QPointF(ex, h));
+                p.drawText(QPointF(std::min(ex + 3, static_cast<double>(w - 60)), 12 + 12 * (k % 4)), tr("end of %1").arg(k));
+            }
         }
     }
-
     // The bar, or the edges of the zone.
     p.setPen(QPen(accent, 2));
     p.setBrush(accent);
@@ -286,8 +310,18 @@ void WaveformView::paintEvent(QPaintEvent *)
         const qint64 at = sampleAt(m_hover.x());
         QVector<ReadoutLine> lines;
         lines.push_back({tr("%1 · sample %2").arg(fmt::milliseconds(m_session->seconds(at)), fmt::count(at)), QColor()});
+        const bool traceMode = isCombined() && !r.traces.empty() && (m_session->stackShown() || m_session->residueShown());
+        if (traceMode) {
+            for (const Trace &trace : r.traces) {
+                const qint64 i = at - r.windowStart;
+                if (i < 0 || i >= static_cast<qint64>(trace.wave.size())) {
+                    continue;
+                }
+                lines.push_back({QStringLiteral("%1: %2").arg(trace.label).arg(QString::number(static_cast<double>(trace.wave[static_cast<size_t>(i)]), 'f', 1)), trace.track >= 0 ? m_session->color(trace.track) : QColor()});
+            }
+        }
         for (int k : tracks) {
-            if (k >= static_cast<int>(r.wave.size())) {
+            if (traceMode || k >= static_cast<int>(r.wave.size())) {
                 continue;
             }
             const std::vector<float> &y = r.wave[static_cast<size_t>(k)];
