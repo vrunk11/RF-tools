@@ -344,7 +344,15 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
                 capture.rateHz = fs;
                 capture.bits = 16;
                 TrackReader reader(inputs[i], capture);
-                fields[i] = locateFields(reader, 0, fs, o.pal ? VideoSystem::Pal : VideoSystem::Ntsc, o.threads);
+                int shown = -1;
+                fields[i] = locateFields(reader, 0, fs, o.pal ? VideoSystem::Pal : VideoSystem::Ntsc, o.threads, nullptr, [&](double part) {
+                    const int percent = static_cast<int>(part * 100.0);
+                    if (percent != shown) {
+                        shown = percent;
+                        std::fprintf(stderr, "pass 0 [%zu/%zu] %s: %d%%\r", i + 1, inputs.size(), names[i].c_str(), percent);
+                    }
+                });
+                std::fprintf(stderr, "pass 0 [%zu/%zu] %s: 100%%\n", i + 1, inputs.size(), names[i].c_str());
             }
             phase("pass 0 done");
         }
@@ -708,6 +716,7 @@ std::vector<PackedTrack> writePrepared(PreparedPack &prepared, const QString &ou
                 packed += blocks[i].size();
                 writeAll(out, ebml::cluster(first + i, k + 1, blocks[i]));
             }
+            std::fprintf(stderr, "coding %s: %d%%\r", sm.name.c_str(), static_cast<int>(100.0 * static_cast<double>(std::min(first + count, nseg)) / static_cast<double>(std::max<size_t>(nseg, 1))));
         }
         const double secs = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
         std::fprintf(stderr, "%s: %llu -> %llu bytes (%.3f bits/sample, %s%%), %zu reference(s), %.1f Msmp/s\n", sm.name.c_str(),

@@ -17,6 +17,7 @@
 #include "error.h"
 #include "ffmpeg.h"
 #include "flacmode.h"
+#include "parallel.h"
 #include "segment.h"
 
 #include <QDir>
@@ -33,7 +34,7 @@ namespace {
 
 // Segments kept: a window of a few segments over every track, and what it was
 // predicted from. About a megabyte a segment at the default segment length.
-constexpr size_t kHeldSegments = 160;
+constexpr size_t kHeldSegments = 384;
 
 // The samples looked at to find the bits a raw capture carries, and read at a time.
 constexpr uint64_t kScannedSamples = uint64_t(1) << 24;
@@ -156,8 +157,19 @@ const LagTable *TrackReader::lagTable(size_t k, size_t j) const
     return it == m_archive->tables().end() ? nullptr : &it->second;
 }
 
+const SavedPass0 *TrackReader::pass0(size_t k) const
+{
+    if (!m_archive) {
+        return nullptr;
+    }
+    const auto it = m_archive->pass0().find(k);
+    return it == m_archive->pass0().end() ? nullptr : &it->second;
+}
+
 TrackReader::Segment TrackReader::segment(size_t k, uint64_t g)
 {
+    std::promise<Segment> promise;
+    std::shared_future<Segment> waiting;
     {
         std::lock_guard<std::mutex> lock(m_mutex);
         const auto it = m_held.find({k, g});
@@ -165,7 +177,37 @@ TrackReader::Segment TrackReader::segment(size_t k, uint64_t g)
             it->second.tick = ++m_tick;
             return it->second.samples;
         }
+        const auto flight = m_inflight.find({k, g});
+        if (flight != m_inflight.end()) {
+            waiting = flight->second;
+        } else {
+            m_inflight.emplace(std::make_pair(k, g), promise.get_future().share());
+        }
     }
+    if (waiting.valid()) {
+        return waiting.get();
+    }
+    // (a segment only waits for tracks before its own, so that no two threads wait for each other)
+    try {
+        const Segment decoded = decodeSegment(k, g);
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_inflight.erase({k, g});
+        }
+        promise.set_value(decoded);
+        return decoded;
+    } catch (...) {
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_inflight.erase({k, g});
+        }
+        promise.set_exception(std::current_exception());
+        throw;
+    }
+}
+
+TrackReader::Segment TrackReader::decodeSegment(size_t k, uint64_t g)
+{
 
     const SourceMeta &sm = m_meta.sources[k];
     const uint64_t s = m_meta.segment;
@@ -232,6 +274,33 @@ void TrackReader::read(size_t k, int64_t start, size_t n, int32_t *out)
         return;
     }
     const int64_t s = static_cast<int64_t>(m_meta.segment);
+    // A long stretch asked for at once (the location of the lines reads megabytes): the segments that are not held are independent
+    // of one another, so they are decoded on all the processors. A segment decoded inside this loop reads its references on its
+    // own thread, one after the other.
+    thread_local bool inPrefetch = false;
+    if (!inPrefetch) {
+        std::vector<uint64_t> missing;
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            for (int64_t g = from / s; g * s < to; ++g) {
+                if (m_held.find({k, static_cast<uint64_t>(g)}) == m_held.end()) {
+                    missing.push_back(static_cast<uint64_t>(g));
+                }
+            }
+        }
+        if (missing.size() > 1) {
+            parallelFor(missing.size(), defaultThreads(), [&](size_t i) {
+                inPrefetch = true;
+                try {
+                    segment(k, missing[i]);
+                } catch (...) {
+                    inPrefetch = false;
+                    throw;
+                }
+                inPrefetch = false;
+            });
+        }
+    }
     for (int64_t g = from / s; g * s < to; ++g) {
         const Segment seg = segment(k, static_cast<uint64_t>(g));
         const int64_t lo = std::max<int64_t>(from, g * s);

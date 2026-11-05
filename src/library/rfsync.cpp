@@ -17,14 +17,19 @@
 #include "error.h"
 #include "parallel.h"
 
+#include "archive.h"
+
 #include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <limits>
+#include <map>
 #include <optional>
+#include <mutex>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -952,7 +957,7 @@ Fine refine(const std::vector<float> &x, double s, const Fir &fir, double fs, bo
 
 } // namespace
 
-std::vector<Field> locateFields(TrackReader &reader, size_t track, double fs, VideoSystem video, unsigned threads, const std::atomic<bool> *stop)
+std::vector<Field> locateFields(TrackReader &reader, size_t track, double fs, VideoSystem video, unsigned threads, const std::atomic<bool> *stop, const std::function<void(double)> &progress)
 {
     if (!(fs > 0.0)) {
         throw Error("pass 0 needs the sample rate of the capture");
@@ -1059,6 +1064,9 @@ std::vector<Field> locateFields(TrackReader &reader, size_t track, double fs, Vi
         }
         tr.flush(fields);
         own0 = own1;
+        if (progress) {
+            progress(length > 0 ? static_cast<double>(own0) / static_cast<double>(length) : 1.0);
+        }
     }
     return fields;
 }
@@ -1066,6 +1074,92 @@ std::vector<Field> locateFields(TrackReader &reader, size_t track, double fs, Vi
 double nominalLineSamples(double fs, VideoSystem system)
 {
     return fs * (system == VideoSystem::Pal ? pal() : ntsc()).lineUs / 1e6;
+}
+
+size_t keepPass0(const QString &archive, double fallbackRateMhz, bool onlyMissing, const std::atomic<bool> *stop)
+{
+    TrackReader reader(archive);
+    if (!reader.keepsSpeed()) {
+        throw Error(archive.toStdString() + ": only a predictor archive can keep the lines of pass 0");
+    }
+    const size_t count = reader.meta().sources.size();
+    std::map<size_t, SavedPass0> found;
+    // What the archive has already is kept as it is.
+    std::vector<size_t> todo;
+    for (size_t k = 0; k < count; ++k) {
+        const SavedPass0 *have = reader.pass0(k);
+        if (have) {
+            found[k] = *have;
+        }
+        if (!have || !onlyMissing) {
+            todo.push_back(k);
+        }
+    }
+    if (todo.empty()) {
+        return 0;
+    }
+    std::mutex mutex;
+    std::vector<int> percent(count, 0);
+    size_t finished = 0;
+    std::string failure;
+    const auto report = [&](bool last) {
+        int sum = 0;
+        for (const size_t k : todo) {
+            sum += percent[k];
+        }
+        const int mean = sum / static_cast<int>(todo.size());
+        std::fprintf(stderr, "pass 0 [%zu/%zu] curve: %d%%%c", finished, todo.size(), mean, last ? '\n' : '\r');
+        std::fflush(stderr);
+    };
+    std::fprintf(stderr, "locating the lines of %zu track(s) (pass 0)\n", todo.size());
+    std::vector<std::thread> workers;
+    for (const size_t k : todo) {
+        workers.emplace_back([&, k] {
+            try {
+                const double rate = reader.meta().sources[k].rateHz > 0 ? reader.meta().sources[k].rateHz : fallbackRateMhz * 1e6;
+                for (const bool pal : {false, true}) {
+                    std::vector<Field> fields = locateFields(reader, k, rate, pal ? VideoSystem::Pal : VideoSystem::Ntsc, 0, stop, [&](double part) {
+                        const int now = std::clamp(static_cast<int>(part * 100.0), 0, 100);
+                        std::lock_guard<std::mutex> lock(mutex);
+                        if (now != percent[k]) {
+                            percent[k] = now;
+                            report(false);
+                        }
+                    });
+                    const bool usable = std::any_of(fields.begin(), fields.end(), [](const Field &f) { return f.lines.size() >= 20; });
+                    if (usable || (stop && stop->load())) {
+                        if (usable) {
+                            std::lock_guard<std::mutex> lock(mutex);
+                            found[k] = SavedPass0{pal, rate, std::move(fields)};
+                        }
+                        break;
+                    }
+                }
+            } catch (const std::exception &e) {
+                std::lock_guard<std::mutex> lock(mutex);
+                failure = e.what();
+            }
+            std::lock_guard<std::mutex> lock(mutex);
+            percent[k] = 100;
+            ++finished;
+            report(finished == todo.size());
+        });
+    }
+    for (std::thread &w : workers) {
+        w.join();
+    }
+    if (stop && stop->load()) {
+        throw Error("stopped");
+    }
+    if (!failure.empty()) {
+        throw Error(failure);
+    }
+    size_t done = 0;
+    for (const size_t k : todo) {
+        done += found.count(k) && (!reader.pass0(k) || !onlyMissing) ? 1 : 0;
+    }
+    savePass0(archive, found);
+    return done;
 }
 
 std::string formatPass0(const std::vector<Field> &fields)

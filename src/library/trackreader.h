@@ -22,6 +22,7 @@
 #include <cstdint>
 #include <map>
 #include <memory>
+#include <future>
 #include <mutex>
 #include <optional>
 #include <string>
@@ -76,6 +77,10 @@ public:
     uint64_t packedBytes(size_t k) const { return m_archive ? m_archive->packedBytes(k) : (m_stored ? m_fileSize / std::max<size_t>(1, m_meta.sources.size()) : m_fileSize); }
     // The lag table of track `k` against its reference `j`, or null.
     const LagTable *lagTable(size_t k, size_t j) const;
+    // What pass 0 found in track k, as the archive keeps it (null when it keeps none, and for what is not an archive).
+    const SavedPass0 *pass0(size_t k) const;
+    // Whether the file can keep speed curves (a predictor archive).
+    bool keepsSpeed() const { return m_archive != nullptr; }
 
     // The `n` canonical samples of track `k` from sample `start` (zero outside the
     // track), in the sense of specification 1.
@@ -91,7 +96,9 @@ private:
     void readStretches(size_t k, int64_t start, size_t n, int32_t *out, bool keep);
     void readStored(size_t k, int64_t start, size_t n, int32_t *out, bool keep);
     using Segment = std::shared_ptr<const std::vector<int32_t>>;
+    // A segment, held or decoded: when several threads want one that is being decoded, it is decoded once, by one of them.
     Segment segment(size_t k, uint64_t g);
+    Segment decodeSegment(size_t k, uint64_t g);
 
     struct Held
     {
@@ -140,6 +147,7 @@ private:
     void indexStored();
     std::vector<int16_t> storedWindow(size_t k, uint64_t from, size_t count);
     std::map<std::pair<size_t, uint64_t>, Held> m_held;
+    std::map<std::pair<size_t, uint64_t>, std::shared_future<Segment>> m_inflight;
     uint64_t m_tick = 0;
 };
 

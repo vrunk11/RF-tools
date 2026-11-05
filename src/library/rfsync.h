@@ -15,6 +15,7 @@
 #include "trackreader.h"
 
 #include <atomic>
+#include <functional>
 #include <cstddef>
 #include <vector>
 
@@ -33,10 +34,18 @@ enum class VideoSystem { Ntsc, Pal };
 // form of a pass 0 dump (`Field`), so that the lag tables are built from them as from a file. `stop`, when given, is polled:
 // when it becomes true the work ends and what was found so far is returned. Throws rfx::Error.
 std::vector<Field> locateFields(TrackReader &reader, size_t track, double fs, VideoSystem system, unsigned threads,
-                                const std::atomic<bool> *stop = nullptr);
+                                const std::atomic<bool> *stop = nullptr,
+                                const std::function<void(double)> &progress = {});
 
 // The length of a line in samples at `fs` on the disc's nominal speed.
 double nominalLineSamples(double fs, VideoSystem system);
+
+// Locate the lines of the tracks of an archive from their RF and keep what is found in the archive (specification 3.1: a block added at the
+// end of the file, nothing else rewritten), from which the speed of the disc and the time base correction are made. The tracks are worked on
+// together, so that what they are coded against is decoded once. NTSC is tried first, then PAL. With onlyMissing, the tracks the archive
+// already has the lines of are left as they are. allbackRateMhz is the rate of a track that has none. Progress goes to stderr as `pass 0`.
+// Returns the number of tracks that were done. Throws rfx::Error.
+size_t keepPass0(const QString &archive, double fallbackRateMhz, bool onlyMissing, const std::atomic<bool> *stop = nullptr);
 
 // A pass 0 dump of the fields, as ld-decode writes it (`LD_DUMP_PASS0`), exact to the bit: for tests, and to look at.
 std::string formatPass0(const std::vector<Field> &fields);

@@ -23,6 +23,9 @@
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QJsonArray>
+#include <QJsonDocument>
+#include <QJsonObject>
 
 #include <algorithm>
 #include <chrono>
@@ -74,6 +77,9 @@ std::string bitsPerSample(uint64_t packed, uint64_t words)
     return format("%.3f", static_cast<double>(packed) * 8.0 / static_cast<double>(std::max<uint64_t>(words, 1)));
 }
 
+// The timestamp of the cluster of the metadata track that holds the speed curves (0 is the metadata).
+constexpr uint64_t kSpeedTimestamp = 1;
+
 } // namespace
 
 Archive::Archive(const QString &path)
@@ -124,7 +130,45 @@ Archive::Archive(const QString &path)
         }
         m_tables[{k, j}] = LagTable::decode(table.data() + at, table.size() - at);
     }
-    m_blocks.resize(m_meta.sources.size());
+    // The speed curves (specification 3.1): the last block of the metadata track after the first one.
+    {
+        const ebml::BlockRef *speed = nullptr;
+        for (const ebml::BlockRef &b : idx.blocks) {
+            if (b.track == *metaTrack && b.ts == kSpeedTimestamp) {
+                speed = &b;
+            }
+        }
+        if (speed) {
+            std::vector<uint8_t> data(static_cast<size_t>(speed->len));
+            m_file->readAt(data.data(), data.size(), speed->off);
+            const QJsonDocument doc = QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char *>(data.data()), static_cast<qsizetype>(data.size())));
+            for (const QJsonValue &entry : doc.object().value(QLatin1String("pass0")).toArray()) {
+                const QJsonObject o = entry.toObject();
+                const int track = o.value(QLatin1String("track")).toInt(-1);
+                if (track < 0 || static_cast<size_t>(track) >= m_meta.sources.size()) {
+                    continue;
+                }
+                SavedPass0 saved;
+                saved.pal = o.value(QLatin1String("system")).toString() == QLatin1String("pal");
+                saved.rateHz = o.value(QLatin1String("rate_hz")).toDouble();
+                for (const QJsonValue &fv : o.value(QLatin1String("fields")).toArray()) {
+                    const QJsonObject fo = fv.toObject();
+                    Field field;
+                    field.first = fo.value(QLatin1String("first")).toInt() != 0;
+                    if (fo.contains(QLatin1String("code"))) {
+                        field.code = fo.value(QLatin1String("code")).toString().toStdString();
+                    }
+                    for (const QJsonValue &lv : fo.value(QLatin1String("lines")).toArray()) {
+                        field.lines.push_back(lv.toDouble());
+                    }
+                    saved.fields.push_back(std::move(field));
+                }
+                if (!saved.fields.empty()) {
+                    m_pass0[static_cast<size_t>(track)] = std::move(saved);
+                }
+            }
+        }
+    }    m_blocks.resize(m_meta.sources.size());
     for (const ebml::BlockRef &b : idx.blocks) {
         if (b.track >= 1 && b.track <= m_meta.sources.size()) {
             m_blocks[static_cast<size_t>(b.track) - 1][b.ts] = {b.off, b.len};
@@ -415,6 +459,43 @@ void unpackMetadata(const QString &path, const QString &outdir, std::optional<si
         throw Error("cannot write " + target.toStdString());
     }
     std::printf("%s\n", QDir::toNativeSeparators(target).toStdString().c_str());
+}
+
+void savePass0(const QString &path, const std::map<size_t, SavedPass0> &tracks)
+{
+    // (the archive is read first: it must be one, and the metadata track is the one after the data tracks)
+    uint64_t metaTrack = 0;
+    {
+        const Archive archive(path);
+        metaTrack = archive.meta().sources.size() + 1;
+    }
+    QJsonArray list;
+    for (const auto &entry : tracks) {
+        QJsonArray fields;
+        for (const Field &f : entry.second.fields) {
+            QJsonArray lines;
+            for (const double x : f.lines) {
+                lines.append(std::round(x * 100.0) / 100.0);
+            }
+            QJsonObject fo{{QLatin1String("first"), f.first ? 1 : 0}, {QLatin1String("lines"), lines}};
+            if (f.code) {
+                fo.insert(QLatin1String("code"), QString::fromStdString(*f.code));
+            }
+            fields.append(fo);
+        }
+        list.append(QJsonObject{{QLatin1String("track"), static_cast<int>(entry.first)},
+                                {QLatin1String("system"), QLatin1String(entry.second.pal ? "pal" : "ntsc")},
+                                {QLatin1String("rate_hz"), entry.second.rateHz},
+                                {QLatin1String("fields"), fields}});
+    }
+    const QByteArray json = QJsonDocument(QJsonObject{{QLatin1String("pass0"), list}}).toJson(QJsonDocument::Compact);    const ebml::Bytes block = ebml::cluster(kSpeedTimestamp, metaTrack, ebml::Bytes(json.begin(), json.end()));
+    QFile file(path);
+    if (!file.open(QIODevice::WriteOnly | QIODevice::Append)) {
+        throw Error(path.toStdString() + ": cannot be written: " + file.errorString().toStdString());
+    }
+    if (file.write(reinterpret_cast<const char *>(block.data()), static_cast<qint64>(block.size())) != static_cast<qint64>(block.size()) || !file.flush()) {
+        throw Error(path.toStdString() + ": the pass 0 data could not be written: " + file.errorString().toStdString());
+    }
 }
 
 } // namespace rfx

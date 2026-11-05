@@ -46,6 +46,10 @@ struct PackOptions
     // Run ld-decode (`ldDecode`) for pass 0, as the first versions did, instead of locating the lines in the process (rfsync.h), which gives
     // the same positions.
     bool externalPass0 = false;
+    // Locate the lines of every track from its RF once the archive is written and keep them in it (keepPass0, rfsync.h): the speed of the
+    // disc and the time base correction are then there without the minutes of work each time. Done by the program that asks, not by
+    // packCaptures.
+    bool keepPass0 = false;
     // The captures are of a PAL disc (NTSC when not).
     bool pal = false;
     // Capture sample rate in MHz, for pass 0 and for the metadata when the
