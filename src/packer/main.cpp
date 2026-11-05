@@ -13,6 +13,7 @@
 #include "mainwindow.h"
 
 #include <QApplication>
+#include <QIcon>
 #include <QCommandLineOption>
 #include <QCommandLineParser>
 #include <QCoreApplication>
@@ -62,6 +63,8 @@ int main(int argc, char *argv[])
 
     QApplication app(argc, argv);
     QCoreApplication::setApplicationName(QStringLiteral("rf-packer"));
+    Q_INIT_RESOURCE(rf_packer_resources);
+    QApplication::setWindowIcon(QIcon(QStringLiteral(":/icons/Graphics/256-rf-packer.png")));
     QCoreApplication::setOrganizationName(QStringLiteral("RF-tools"));
     QCoreApplication::setApplicationVersion(QStringLiteral(APP_VERSION " (" APP_BRANCH " " APP_COMMIT ")"));
 

@@ -5,11 +5,18 @@ add_library(rf-packer-gui STATIC
     job.cpp
     mainwindow.cpp
     processdialog.cpp
-    trackrow.cpp)
+    trackrow.cpp
+    rf-packer-resources.qrc)
+set_target_properties(rf-packer-gui PROPERTIES AUTORCC ON)
 target_include_directories(rf-packer-gui PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 target_link_libraries(rf-packer-gui PUBLIC rfx-library rfx-gui-common Qt6::Widgets Qt6::Core)
 
-add_executable(rf-packer main.cpp)
+if(WIN32)
+    # The icon of the program in Windows (the window's own comes from the resources).
+    add_executable(rf-packer main.cpp appicon.rc)
+else()
+    add_executable(rf-packer main.cpp)
+endif()
 target_compile_definitions(rf-packer PRIVATE
     APP_VERSION="${PROJECT_VERSION}"
     APP_BRANCH="${APP_BRANCH}"
@@ -22,3 +29,12 @@ if(WIN32)
 endif()
 
 install(TARGETS rf-packer RUNTIME DESTINATION bin)
+
+# The icon and the menu entry on Linux.
+if(UNIX AND NOT APPLE)
+    foreach(size 16 32 64 128 256)
+        install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/Graphics/${size}-rf-packer.png
+            DESTINATION share/icons/hicolor/${size}x${size}/apps RENAME rf-packer.png)
+    endforeach()
+    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/install/rf-packer.desktop DESTINATION share/applications)
+endif()

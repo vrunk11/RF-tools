@@ -1,0 +1,7 @@
+<RCC>
+    <!-- The icon of the program: a blue cardboard box with RF on its side, drawn on a grid of 32 pixels and enlarged without smoothing
+         (Graphics/, in several sizes for the system: the .ico of Windows and the icons of Linux). -->
+    <qresource prefix="/icons">
+        <file>Graphics/256-rf-packer.png</file>
+    </qresource>
+</RCC>

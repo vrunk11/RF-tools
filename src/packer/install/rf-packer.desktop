@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=rf-packer
+Comment=Pack RF captures into .rfx files and edit them
+Exec=rf-packer %f
+Icon=rf-packer
+Terminal=false
+Categories=AudioVideo;Video;Utility;
