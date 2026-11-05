@@ -71,7 +71,7 @@ move. A file of many gigabytes opens at once.
   pass 0 curve of the track and of the first one (which gives the axis): the program asks whether to work out the ones that are missing,
   for the tracks shown only (the first one is worked out too, when it is not shown, and the message says so), and the box takes effect
   when it is done. The box stays on for the tracks that are shown afterwards: a track ticked in the list while it is on is aligned too, and
-  asked for when it has no curve.
+  asked for when it has no curve. The captures do not all begin at the same place of the disc, and on the corrected time one that began later has nothing before it: once the tracks shown have their time base, a window that lies before the place where all of them are is moved to it.
 - **Speed deviation over time**: how fast or slow each track runs, in parts per million, over the whole capture, from its pass 0 curve: at
   each field, the spacing of the lines against the nominal one (63.556 us NTSC, 64 us PAL), averaged over a few hundredths of the
   capture. Above 0 is faster, below is slower. It is **not there until asked for**: the **From RF** box in the title bar of the block

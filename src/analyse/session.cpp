@@ -935,6 +935,7 @@ void Session::setAligned(int k, bool on)
     }
     m_aligned.resize(m_tracks.size(), false);
     m_aligned[static_cast<size_t>(k)] = on;
+    m_alignPlaced = false;
     if (on) {
         setRfSpeed(k, true);
         if (k != 0) {
@@ -942,7 +943,37 @@ void Session::setAligned(int k, bool on)
         }
     }
     emit rfSpeedChanged();
+    placeAligned();
     refresh();
+}
+
+// On the corrected time the captures do not all start at the same place (one that began later on the disc has nothing before it): once every track
+// shown and aligned has its time base, a window that lies before the place where all of them are is moved to it, so that they are all in view.
+void Session::placeAligned()
+{
+    if (m_alignPlaced) {
+        return;
+    }
+    double common = 0.0;
+    bool any = false;
+    for (int k = 0; k < trackCount(); ++k) {
+        if (!aligned(k) || !visible(k)) {
+            continue;
+        }
+        const auto base = timebaseOf(k);
+        if (!base) {
+            return;   // (not all of them are ready: later)
+        }
+        common = std::max(common, base->tau.front());
+        any = true;
+    }
+    if (!any) {
+        return;
+    }
+    m_alignPlaced = true;
+    if (static_cast<double>(m_windowStart) < common) {
+        setWindowStart(static_cast<qint64>(std::ceil(common)));
+    }
 }
 
 bool Session::hasSpeed(int k) const
@@ -1043,6 +1074,7 @@ void Session::startRfSpeed(int only)
                 if (m_openId.load() == id) {
                     emit rfSpeedChanged();
                     if (std::any_of(m_aligned.begin(), m_aligned.end(), [](bool on) { return on; })) {
+                        placeAligned();
                         refresh();   // (the waveform now has its curve to be aligned by)
                     }
                 }

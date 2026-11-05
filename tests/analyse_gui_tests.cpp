@@ -150,6 +150,7 @@ private slots:
     void compactModeAndSpectrumControls();
     void decodesCompressedCaptures();
     void alignsRealCaptures();
+    void alignsASubsetOfTheTracks();
     void speedFromTheRf();
     void showsTheSidecarOfACapture();
 
@@ -1288,6 +1289,44 @@ void AnalyseGuiTests::alignsRealCaptures()
         QVERIFY(aligned > plain[static_cast<size_t>(k - 1)]);
     }
 }
+// (opt-in, with RFX_REAL_RFX) Only some of the tracks shown, the first one not among them: aligned, they are in view, not an empty graph where a
+// capture that started later on the disc has nothing yet.
+// (opt-in, with RFX_REAL_RFX) Only some of the tracks shown, the first one not among them: aligned, they are in view, not an empty graph
+// where a capture that started later on the disc has nothing yet.
+void AnalyseGuiTests::alignsASubsetOfTheTracks()
+{
+    const QString path = qEnvironmentVariable("RFX_REAL_RFX");
+    if (path.isEmpty()) {
+        QSKIP("RFX_REAL_RFX is not set");
+    }
+    Session s;
+    QString error;
+    QVERIFY2(s.open(path, &error), qPrintable(error));
+    s.setVisible(0, false);
+    s.setVisible(1, false);
+    const auto energy = [&](int k) {
+        double e = 0;
+        for (float v : s.result().wave[static_cast<size_t>(k)]) {
+            e += double(v) * v;
+        }
+        return e;
+    };
+    QVERIFY(settle(s));
+    QVERIFY(energy(2) > 0 && energy(3) > 0);
+    s.setAligned(2, true);
+    s.setAligned(3, true);
+    QElapsedTimer waited;
+    waited.start();
+    while (s.rfSpeedBusy() && waited.elapsed() < 600000) {
+        QTest::qWait(100);
+    }
+    for (int i = 0; i < 600 && !s.upToDate(); ++i) {
+        QTest::qWait(100);
+    }
+    QVERIFY(s.upToDate());
+    QVERIFY(energy(2) > 0 && energy(3) > 0);
+}
+
 void AnalyseGuiTests::decodesCompressedCaptures()
 {
     // A FLAC as ld-decode writes it: the rate in kHz in its header (40000 for 40 MHz).

@@ -265,6 +265,8 @@ private:
     using SpeedCurve = std::vector<std::pair<double, double>>;
     std::vector<bool> m_rfOn;
     std::vector<bool> m_aligned;
+    bool m_alignPlaced = false;
+    void placeAligned();
     QThreadPool m_speedPool;
     std::vector<std::shared_ptr<const SpeedCurve>> m_rfCurves;
     // What pass 0 found in each track (the fields), from which the curve above and the time base are made.
