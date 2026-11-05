@@ -15,12 +15,15 @@
 #include "readout.h"
 #include "session.h"
 
+#include <QComboBox>
 #include <QFontDatabase>
 #include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QMouseEvent>
 #include <QPainter>
+#include <QSettings>
+#include <QWheelEvent>
 #include <QVBoxLayout>
 
 #include <algorithm>
@@ -36,6 +39,8 @@ constexpr int kTicks = 4;
 // The least the axis covers, in parts per million, so that a track that does not move
 // is a line and not a scale.
 constexpr double kLeastRangePpm = 10.0;
+// The amplitudes the graph can be set to, in ppm.
+constexpr double kRanges[] = {5, 10, 20, 50, 100, 200, 500, 1000, 2000, 5000, 10000, 20000, 50000, 100000};
 
 // `value` rounded up to 1, 2 or 5 times a power of ten.
 double niceCeil(double value)
@@ -65,6 +70,7 @@ DeviationView::DeviationView(Session *session, QWidget *parent) : QWidget(parent
     setSizePolicy(QSizePolicy::Expanding, QSizePolicy::Expanding);
     connect(session, &Session::changed, this, qOverload<>(&QWidget::update));
     connect(session, &Session::rfSpeedChanged, this, qOverload<>(&QWidget::update));
+    connect(session, &Session::rfSpeedProgress, this, qOverload<>(&QWidget::update));
 }
 
 void DeviationView::setTracks(const QVector<int> &tracks)
@@ -79,11 +85,12 @@ QVector<int> DeviationView::curves() const
     if (!m_session->isOpen()) {
         return out;
     }
-    // The tracks of an archive: those with a reference as the speed against it, the
-    // reference itself as the line of no deviation.
+    // Only the speed measured from the RF (From RF, asked for): the stored one is relative to the reference, and says nothing of
+    // what the reference itself does.
     for (int k = 0; k < m_session->trackCount(); ++k) {
         const bool wanted = m_tracks.isEmpty() ? m_session->visible(k) : m_tracks.contains(k);
-        if (wanted && (m_session->inArchive(k) || m_session->rfSpeed())) {
+        // The speed is measured track by track, for those asked for (the box of the title bar).
+        if (wanted && m_session->rfSpeed(k)) {
             out.push_back(k);
         }
     }
@@ -143,7 +150,8 @@ void DeviationView::paintEvent(QPaintEvent *)
         speeds.push_back(std::move(s));
     }
     // Symmetric about zero, with a little room.
-    const double range = niceCeil(std::max(kLeastRangePpm, biggest * 1.15));
+    const double range = m_range > 0.0 ? m_range : niceCeil(std::max(kLeastRangePpm, biggest * 1.15));
+    m_shownRange = range;
     const auto yOf = [&](double v) { return top + plotH / 2.0 - v / range * plotH / 2.0; };
 
     p.setFont(font());
@@ -170,6 +178,23 @@ void DeviationView::paintEvent(QPaintEvent *)
         const QString t = QString::number(m_session->seconds(m_session->totalSamples()) * 1000.0 * i / kTicks, 'f', 0) + QStringLiteral(" ms");
         p.drawText(QPointF(std::min(x - 8, static_cast<double>(width()) - 44), height() - 3), t);
         p.setPen(QPen(grid, 1));
+    }
+
+    // Tracks whose speed is still being worked out (it takes minutes on a large capture): said in the graph itself.
+    QStringList pending;
+    for (int k : tracks) {
+        if (!m_session->hasSpeed(k)) {
+            pending << (m_session->rfProgressOf(k) >= 0 ? tr("%1 (%2%)").arg(k).arg(m_session->rfProgressOf(k)) : tr("%1 (waiting)").arg(k));
+        }
+    }
+    if (!pending.isEmpty()) {
+        QFont big = font();
+        big.setPointSizeF(big.pointSizeF() * 1.2);
+        p.setFont(big);
+        p.setPen(pal.color(QPalette::Text));
+        p.drawText(QRectF(plotLeft(), top, plotRight() - plotLeft(), plotH), Qt::AlignCenter,
+                   tr("Working out the speed from the RF…\ntrack %1\nit takes a while on a large capture").arg(pending.join(QStringLiteral(", "))));
+        p.setFont(font());
     }
 
     // The window the waveform shows.
@@ -246,6 +271,39 @@ void DeviationView::mousePressEvent(QMouseEvent *event)
     m_session->setCursor(sampleAt(event->position().x()), true);
 }
 
+void DeviationView::setRange(double ppm)
+{
+    m_range = ppm;
+    update();
+}
+
+void DeviationView::wheelEvent(QWheelEvent *event)
+{
+    const int dy = event->angleDelta().y();
+    if (dy == 0) {
+        QWidget::wheelEvent(event);
+        return;
+    }
+    // Forward zooms in on the curve (a smaller range), backward out of it; from auto it starts at the range being shown.
+    const double now = m_range > 0.0 ? m_range : m_shownRange;
+    double next = now;
+    if (dy > 0) {
+        for (const double r : kRanges) {
+            if (r < now * 0.999) {
+                next = r;
+            }
+        }
+    } else {
+        for (auto it = std::rbegin(kRanges); it != std::rend(kRanges); ++it) {
+            if (*it > now * 1.001) {
+                next = *it;
+            }
+        }
+    }
+    emit rangeChosen(next);
+    event->accept();
+}
+
 void DeviationView::leaveEvent(QEvent *)
 {
     m_hover = QPoint(-1, -1);
@@ -291,16 +349,50 @@ DeviationBlock::DeviationBlock(Session *session, QWidget *parent) : QWidget(pare
     row->addStretch();
     m_rfBox = new QCheckBox(tr("From RF"), m_head);
     m_rfBox->setObjectName(QStringLiteral("rfSpeedBox"));
-    m_rfBox->setToolTip(tr("Measure the speed from the RF itself instead of reading it from the stored lag: the lines of every track are located from its signal (the pass 0 of ld-decode), and the speed is the spacing of the lines against the nominal one. It works for the reference and for a capture on its own, with or without a stored curve."));
-    m_rfBox->setChecked(session->rfSpeed());
-    connect(m_rfBox, &QCheckBox::toggled, this, [this](bool on) { m_session->setRfSpeed(on); });
+    m_rfBox->setToolTip(tr("Measure the speed from the RF itself (the track of the lane, or every track shown in the combined view): its lines are located from its signal (the pass 0 of ld-decode), and the speed is the spacing of the lines against the nominal one. It works for the reference and for a capture on its own, with or without a stored curve."));
+    connect(m_rfBox, &QCheckBox::toggled, this, [this](bool on) {
+        m_rfMode = on;
+        // A lane: its track. The combined view: every track shown, the selected one first.
+        const QVector<int> tracks = rfTracks();
+        for (int k : tracks) {
+            if (k == m_session->selected()) {
+                m_session->setRfSpeed(k, on);
+            }
+        }
+        for (int k : tracks) {
+            if (k != m_session->selected()) {
+                m_session->setRfSpeed(k, on);
+            }
+        }
+    });
     row->addWidget(m_rfBox);
+    m_rangeBox = new QComboBox(m_head);
+    m_rangeBox->setObjectName(QStringLiteral("speedRange"));
+    m_rangeBox->setToolTip(tr("The amplitude of the graph, above and below 0 (the wheel over the graph changes it too). Auto fits the largest deviation."));
+    m_rangeBox->addItem(tr("Range: auto"), 0.0);
+    for (const double ppm : kRanges) {
+        m_rangeBox->addItem(tr("Range: ±%1 ppm").arg(ppm), ppm);
+    }
+    m_rangeBox->setCurrentIndex(std::max(0, m_rangeBox->findData(QSettings().value(QStringLiteral("speedRange"), 0.0).toDouble())));
+    connect(m_rangeBox, qOverload<int>(&QComboBox::currentIndexChanged), this, [this] {
+        const double ppm = m_rangeBox->currentData().toDouble();
+        QSettings().setValue(QStringLiteral("speedRange"), ppm);
+        m_view->setRange(ppm);
+    });
+    row->addWidget(m_rangeBox);
     row->addWidget(m_values);
     layout->addWidget(m_head);
     m_separator = makeSeparator(this);
     layout->addWidget(m_separator);
 
     m_view = new DeviationView(session, this);
+    m_view->setRange(m_rangeBox->currentData().toDouble());
+    connect(m_view, &DeviationView::rangeChosen, this, [this](double ppm) {
+        const int at = m_rangeBox->findData(ppm);
+        if (at >= 0) {
+            m_rangeBox->setCurrentIndex(at);
+        }
+    });
     m_viewFrame = sunkenFrame(m_view, this);
     layout->addWidget(m_viewFrame, 1);
 
@@ -311,11 +403,23 @@ DeviationBlock::DeviationBlock(Session *session, QWidget *parent) : QWidget(pare
 
     connect(session, &Session::changed, this, &DeviationBlock::refresh);
     connect(session, &Session::rfSpeedChanged, this, [this] {
-        const QSignalBlocker block(m_rfBox);
-        m_rfBox->setChecked(m_session->rfSpeed());
         refresh();
     });
-    connect(session, &Session::opened, this, &DeviationBlock::refresh);
+    connect(session, &Session::opened, this, [this] {
+        m_rfMode = false;
+        refresh();
+    });
+    // A track shown while the box is on is worked out too.
+    connect(session, &Session::changed, this, [this] {
+        if (!m_rfMode) {
+            return;
+        }
+        for (int k : rfTracks()) {
+            if (!m_session->rfSpeed(k)) {
+                m_session->setRfSpeed(k, true);
+            }
+        }
+    });
     refresh();
 }
 
@@ -333,8 +437,25 @@ void DeviationBlock::setTracks(const QVector<int> &tracks)
     refresh();
 }
 
+// The tracks the box From RF is about: the one of the block (a lane), or every track shown.
+QVector<int> DeviationBlock::rfTracks() const
+{
+    QVector<int> out;
+    for (int k = 0; k < m_session->trackCount(); ++k) {
+        if (m_tracks.isEmpty() ? m_session->visible(k) : m_tracks.contains(k)) {
+            out.push_back(k);
+        }
+    }
+    return out;
+}
+
 void DeviationBlock::refresh()
 {
+    {
+        const QSignalBlocker block(m_rfBox);
+        const QVector<int> tracks = rfTracks();
+        m_rfBox->setChecked(!tracks.isEmpty() && std::all_of(tracks.begin(), tracks.end(), [this](int k) { return m_session->rfSpeed(k); }));
+    }
     const QVector<int> curves = m_view->curves();
     const bool any = !curves.isEmpty();
     m_rfBox->setEnabled(m_session->isOpen());
@@ -344,12 +465,9 @@ void DeviationBlock::refresh()
     m_separator->setVisible(!(any && !m_collapsed));
     m_unavailable->setVisible(false);
     m_collapseButton->setEnabled(any);
-    QString subtitle = tr("in ppm against the reference: 0 = no TBC correction, above faster, below slower");
-    if (m_session->rfSpeed()) {
-        subtitle = m_session->rfSpeedBusy() ? tr("working out the speed from the RF2026") : tr("in ppm from the RF: the line spacing against the nominal one, above faster, below slower");
-    }
+    const QString subtitle = m_session->rfSpeedBusy() ? tr("working out the speed from the RF…") : tr("in ppm from the RF: the line spacing against the nominal one, above faster, below slower");
     m_subtitle->setText(any ? subtitle
-                            : tr("not applicable: %1").arg(m_session->isOpen() ? tr("a capture on its own has no reference to be compared with (tick From RF)") : tr("no file is open")));
+                            : tr("not computed: %1").arg(m_session->isOpen() ? tr("tick From RF to measure the speed of the track from the RF (it takes a while)") : tr("no file is open")));
     // Without a curve, or reduced, the block is one line, and does not take room from the others.
     const bool reduced = !any || m_collapsed;
     const int line = m_head->sizeHint().height() + 2;

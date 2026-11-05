@@ -440,6 +440,18 @@ MainWindow::MainWindow() : m_session(new Session(this))
     statusBar()->addWidget(m_statusTracks);
     statusBar()->addWidget(m_statusDuration);
     statusBar()->addWidget(m_statusFile);
+    // While a speed is worked out from the RF (it takes minutes): which track, and how far.
+    m_statusSpeed = new QLabel(this);
+    m_statusSpeed->setObjectName(QStringLiteral("speedProgress"));
+    statusBar()->addPermanentWidget(m_statusSpeed);
+    const auto showSpeedProgress = [this] {
+        const int working = m_session->rfWorkingTracks();
+        m_statusSpeed->setVisible(working > 0);
+        m_statusSpeed->setText(working > 0 ? tr("Working out the speed from the RF: %n track(s), %1%", nullptr, working).arg(m_session->rfMeanPercent()) : QString());
+    };
+    connect(m_session, &Session::rfSpeedChanged, this, showSpeedProgress);
+    connect(m_session, &Session::rfSpeedProgress, this, showSpeedProgress);
+    m_statusSpeed->hide();
 
     connect(m_tracks, &TrackList::rowClicked, this, [this](int row, bool wasSelected) {
         if (wasSelected) {
@@ -542,6 +554,104 @@ MainWindow::~MainWindow()
     m_session->close();
 }
 
+// The box "Align capture" of a waveform: the time base of its tracks corrected (from the lines of pass 0, the ones the graph of the speed is
+// made from), the tracks shown when `tracks` is empty. It stays on for the tracks that are shown afterwards (a track ticked in the list is
+// aligned too). Without the lines of a track, it asks whether to work them out, for the tracks wanted only.
+QCheckBox *MainWindow::alignBox(QWidget *parent, const QVector<int> &tracks)
+{
+    auto *box = new QCheckBox(tr("Align capture"), parent);
+    box->setObjectName(QStringLiteral("alignBox"));
+    box->setToolTip(tr("Correct the time base of the capture, as before stacking: every line at its place at the nominal speed, the same place in every capture. The waveform, the spectrum and the statistics are those of the resampled signal. It needs the lines of pass 0 (the curve of the graph of the speed); without them it proposes to work them out for the tracks shown."));
+    const auto wanted = [this, tracks] {
+        QVector<int> out;
+        for (int k = 0; k < m_session->trackCount(); ++k) {
+            if (tracks.isEmpty() ? m_session->visible(k) : tracks.contains(k)) {
+                out.push_back(k);
+            }
+        }
+        return out;
+    };
+    // `mode`: the box is on, for the tracks wanted now and for those that come to be.
+    auto mode = std::make_shared<bool>(false);
+    auto asking = std::make_shared<bool>(false);
+    const auto sync = [this, box, wanted, mode] {
+        const QVector<int> list = wanted();
+        const QSignalBlocker block(box);
+        box->setChecked(*mode && !list.isEmpty());
+    };
+    // Align the tracks wanted that are not: after asking when some have no lines yet (False: not wanted, the box goes off).
+    const auto apply = [this, box, wanted, mode, asking, sync] {
+        const QVector<int> list = wanted();
+        QVector<int> todo;
+        QStringList missing;
+        for (int k : list) {
+            if (!m_session->aligned(k)) {
+                todo.push_back(k);
+                if (!m_session->curveReady(k) && !m_session->rfSpeed(k)) {
+                    missing << QString::number(k);
+                }
+            }
+        }
+        if (todo.isEmpty()) {
+            return;
+        }
+        if (!missing.isEmpty()) {
+            *asking = true;
+            QString text = tr("The lines of pass 0 of the track(s) %1 are not worked out yet. Work them out from the RF now? It takes a while (minutes for a large capture); the waveform is aligned when it is done.").arg(missing.join(QStringLiteral(", ")));
+            if (!todo.contains(0) && !m_session->curveReady(0) && !m_session->rfSpeed(0)) {
+                text += QLatin1Char('\n') + tr("The first track is worked out too: it gives the axis the others are lined up on.");
+            }
+            const auto answer = QMessageBox::question(this, tr("Align capture"), text);
+            *asking = false;
+            if (answer != QMessageBox::Yes) {
+                *mode = false;
+                sync();
+                return;
+            }
+        }
+        // The selected track first, so that it is the first to be done.
+        for (int k : todo) {
+            if (k == m_session->selected()) {
+                m_session->setAligned(k, true);
+            }
+        }
+        for (int k : todo) {
+            if (k != m_session->selected()) {
+                m_session->setAligned(k, true);
+            }
+        }
+    };
+    connect(m_session, &Session::rfSpeedChanged, box, sync);
+    connect(m_session, &Session::opened, box, [mode, sync] {
+        *mode = false;
+        sync();
+    });
+    // A track shown while the box is on is aligned too (and asked for, when it has no lines yet).
+    connect(m_session, &Session::changed, box, [mode, asking, apply, sync] {
+        sync();
+        if (*mode && !*asking) {
+            apply();
+        }
+    });
+    connect(box, &QCheckBox::toggled, this, [this, wanted, mode, apply, sync](bool on) {
+        *mode = on;
+        if (on) {
+            apply();
+            sync();
+        } else {
+            for (int k : wanted()) {
+                m_session->setAligned(k, false);
+            }
+        }
+    });
+    {
+        // (a lane made again starts as the state of the tracks is)
+        const QVector<int> list = wanted();
+        *mode = !list.isEmpty() && std::all_of(list.begin(), list.end(), [this](int k) { return m_session->aligned(k); });
+    }
+    sync();
+    return box;
+}
 QWidget *MainWindow::buildCombined()
 {
     auto *page = new QWidget(this);
@@ -574,6 +684,7 @@ QWidget *MainWindow::buildCombined()
         m_waveReduced = reduced;
         applyPanels();
     }));
+    m_waveHeadLayout->insertWidget(2, alignBox(waveHead, {}));
     m_panelHead[kPanelWave] = waveHead;
     m_panelBody[kPanelWave] = waveFrame;
 
@@ -762,6 +873,7 @@ void MainWindow::buildLanes()
         headRow->addWidget(name);
         QToolButton *waveToggle = makeCollapseButton(head, nullptr);
         headRow->addWidget(waveToggle);
+        headRow->addWidget(alignBox(head, {k}));
         headRow->addStretch();
         headRow->addWidget(info);
         if (k == tracks.first() && !m_allLanes) {
@@ -1016,6 +1128,9 @@ void MainWindow::buildMenus()
     m_recentMenu = file->addMenu(tr("Open &recent"));
     file->addSeparator();
     m_exportAction = file->addAction(tr("&Export metadata as YAML…"), this, &MainWindow::exportYaml);
+    m_saveSpeedAction = file->addAction(tr("Save speed &curve"), this, &MainWindow::saveSpeed);
+    m_saveSpeedAction->setToolTip(tr("Keep the speed curves that are worked out in the .rfx file (a few kilobytes added at its end; they are shown at once next time)."));
+    connect(file, &QMenu::aboutToShow, this, [this] { m_saveSpeedAction->setEnabled(m_session->isOpen() && m_session->canSaveSpeed()); });
     m_closeAction = file->addAction(tr("&Close file"), this, &MainWindow::closeFile);
     m_closeAction->setShortcut(QKeySequence::Close);
     file->addSeparator();
@@ -1093,7 +1208,7 @@ void MainWindow::buildMenus()
     QMenu *help = menuBar()->addMenu(tr("&Help"));
     help->addAction(tr("&About RF-analyse"), this, [this] {
         QMessageBox::about(this, tr("About RF-analyse"),
-                           tr("<b>RF-analyse</b> %1<br>Looks at the RF captures stored in an .rfx file: the waveform, the spectrum, the noise and the drift of each track.<br>Part of RF-tools, GPL-3.0-or-later.").arg(QCoreApplication::applicationVersion()));
+                           tr("<b>RF-analyse</b> %1<br>Looks at the RF captures stored in an .rfx file: the waveform, the spectrum, the noise and the drift of each track.<br>Part of RF-tools, GPL-3.0-or-later.<br><br>Contributors: vrunk11.").arg(QCoreApplication::applicationVersion()));
     });
 }
 
@@ -1547,6 +1662,31 @@ void MainWindow::closeFile()
     m_session->close();
 }
 
+void MainWindow::saveSpeed()
+{
+    if (!m_session->isOpen() || !m_session->canSaveSpeed()) {
+        return;
+    }
+    int ready = 0;
+    for (int k = 0; k < m_session->trackCount(); ++k) {
+        ready += m_session->inArchive(k) && m_session->curveReady(k) ? 1 : 0;
+    }
+    if (ready == 0) {
+        QMessageBox::information(this, tr("Save speed curve"), tr("No speed curve is worked out yet. Tick From RF (the graph of the speed) or Align capture for the tracks wanted, wait for it, then save."));
+        return;
+    }
+    if (QMessageBox::question(this, tr("Save speed curve"), tr("Add the speed curves of %n track(s) to the .rfx file? It is written at the end of the file, nothing else in it changes.", nullptr, ready)) != QMessageBox::Yes) {
+        return;
+    }
+    QString error;
+    const int kept = m_session->saveSpeedCurves(&error);
+    if (kept < 0) {
+        QMessageBox::warning(this, tr("Cannot save the speed curve"), error);
+    } else {
+        statusBar()->showMessage(tr("Speed curves kept for %n track(s).", nullptr, kept), 6000);
+    }
+}
+
 void MainWindow::exportYaml()
 {
     if (!m_session->isOpen()) {
@@ -1651,7 +1791,7 @@ bool MainWindow::saveScreenshot(const QString &path)
     QElapsedTimer timer;
     timer.start();
     // The worker is asked again by every change; wait until it has caught up.
-    while ((!m_session->upToDate() || m_session->rfSpeedBusy() || timer.elapsed() < 400) && timer.elapsed() < 120000) {
+    while ((!m_session->upToDate() || m_session->rfSpeedBusy() || timer.elapsed() < 400) && timer.elapsed() < 900000) {
         QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
         QThread::msleep(10);
     }

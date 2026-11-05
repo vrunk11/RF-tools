@@ -12,6 +12,7 @@
 #pragma once
 
 #include "analysis.h"
+#include "timebase.h"
 #include "trackreader.h"
 
 #include <QColor>
@@ -131,14 +132,31 @@ public:
     // The speed from the RF itself (off to begin with): the lines of every track are located from its RF (the pass 0 of ld-decode) and
     // the speed is the line spacing against the nominal one, in ppm, for every track whether it has a stored curve or not (the
     // reference and a capture on its own too). It is worked out in the background, a track after the other.
-    bool rfSpeed() const { return m_rfSpeed; }
-    void setRfSpeed(bool on);
+    // The speed measured from the RF, asked for track by track (the selected one for the forms without a track).
+    bool rfSpeed(int k) const;
+    void setRfSpeed(int k, bool on);
+    // The waveform of a track with its time base corrected by that curve (it asks for the curve when there is none).
+    bool aligned(int k) const;
+    void setAligned(int k, bool on);
+    // The curve is worked out (whether or not the graph of the speed shows it).
+    bool curveReady(int k) const;
+    // Keep the curves that are worked out in the .rfx files they are of (File > Save speed curve): the number of tracks kept; the files
+    // that cannot take them are left alone. canSaveSpeed: there is such a file.
+    bool canSaveSpeed() const;
+    int saveSpeedCurves(QString *error);
+    bool rfSpeed() const { return rfSpeed(m_selected); }
+    void setRfSpeed(bool on) { setRfSpeed(m_selected, on); }
     // Whether some track's speed is still being worked out.
     bool rfSpeedBusy() const { return m_rfBusy.load() > 0; }
+    // The tracks being worked on at the same time, and how far they are on average, in percent.
+    int rfWorkingTracks() const;
+    int rfMeanPercent() const;
+    // Where the speed of track k stands for the list of tracks: -1 nothing is being done for it, -2 it waits for its turn, else the percent done.
+    int rfProgressOf(int k) const;
     // Whether there is a speed to draw for the track (from the RF, once it is made; else against its reference).
     bool hasSpeed(int k) const;
     // Whether the speed of the track is 0 because it is the reference (not so when it is made from the RF).
-    bool speedIsZero(int k) const { return !m_rfSpeed && isReference(k); }
+    bool speedIsZero(int k) const { return !rfSpeed(k) && isReference(k); }
     // Bits the track carries, and the most of any track (what the waveform is in).
     int bits(int k) const;
     int displayBits() const { return m_displayBits; }
@@ -196,12 +214,14 @@ signals:
     void overviewReady();
     // The speed from the RF was switched, or one more track of it is made.
     void rfSpeedChanged();
+    void rfSpeedProgress();
 
 private:
     void refresh();
     void clampWindow();
     void startOverview();
-    void startRfSpeed();
+    void startRfSpeed(int only);
+    std::shared_ptr<const std::vector<std::pair<double, double>>> curveOf(int k) const;
     double rfSpeedAt(int k, qint64 sample) const;
 
     struct Loaded
@@ -243,11 +263,25 @@ private:
     QThreadPool m_overviewPool;
     // The speed from the RF: per track, the speed in ppm at the centre of each field (sample, ppm), or null while it is not made.
     using SpeedCurve = std::vector<std::pair<double, double>>;
-    bool m_rfSpeed = false;
+    std::vector<bool> m_rfOn;
+    std::vector<bool> m_aligned;
     QThreadPool m_speedPool;
     std::vector<std::shared_ptr<const SpeedCurve>> m_rfCurves;
+    // What pass 0 found in each track (the fields), from which the curve above and the time base are made.
+    struct RfData
+    {
+        std::vector<rfx::Field> fields;
+        bool pal = false;
+        double rate = 0.0;
+    };
+    std::vector<std::shared_ptr<const RfData>> m_rfData;
+    std::vector<std::shared_ptr<const TimeBase>> m_timebases;
+    std::shared_ptr<const TimeBase> timebaseOf(int k);
     std::vector<bool> m_rfStarted;
     std::atomic<int> m_rfBusy{0};
+    // Per track, the percent done while it is being worked on (-1 otherwise).
+    std::unique_ptr<std::atomic<int>[]> m_rfPct;
+    size_t m_rfPctCount = 0;
     std::atomic<bool> m_speedStop{false};
     mutable std::mutex m_overviewMutex;
     std::vector<std::shared_ptr<const Overview>> m_overview;

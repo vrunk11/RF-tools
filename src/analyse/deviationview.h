@@ -36,11 +36,20 @@ public:
 
     QSize sizeHint() const override { return {400, 110}; }
 
+    // The amplitude of the graph: the ppm at its top and at its bottom, or 0 for the largest deviation shown, with a little room.
+    void setRange(double ppm);
+    double range() const { return m_range; }
+
+signals:
+    // The wheel asks for another range (ppm).
+    void rangeChosen(double ppm);
+
 protected:
     void paintEvent(QPaintEvent *) override;
     void mousePressEvent(QMouseEvent *event) override;
     void mouseMoveEvent(QMouseEvent *event) override;
     void leaveEvent(QEvent *event) override;
+    void wheelEvent(QWheelEvent *event) override;
 
 private:
     double plotLeft() const;
@@ -50,12 +59,15 @@ private:
 
     Session *m_session;
     QVector<int> m_tracks;
+    double m_range = 0.0;
+    double m_shownRange = 100.0;
     bool m_dragging = false;
     QPoint m_hover = QPoint(-1, -1);
 };
 
 class QLabel;
 class QStackedLayout;
+class QComboBox;
 
 // The view with its heading: the title, what the curve is, and the deviation of
 // every track at the bar; or, when no track drawn has a lag table (the primary
@@ -78,12 +90,15 @@ signals:
 
 private:
     void refresh();
+    QVector<int> rfTracks() const;
+    bool m_rfMode = false;
 
     Session *m_session;
     QVector<int> m_tracks;
     QLabel *m_values;
     QLabel *m_subtitle;
     QCheckBox *m_rfBox = nullptr;
+    QComboBox *m_rangeBox = nullptr;
     QLabel *m_unavailable;
     DeviationView *m_view;
     QWidget *m_head;

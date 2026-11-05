@@ -40,6 +40,7 @@ protected:
 private:
     void rebuild();
     void refreshChecks();
+    void refreshProgress();
 
     Session *m_session;
     bool m_panelShown = true;

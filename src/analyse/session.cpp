@@ -10,6 +10,8 @@
 
 #include "session.h"
 
+#include "timebase.h"
+
 #include "error.h"
 #include "rfsync.h"
 
@@ -44,8 +46,57 @@ struct TrackSource
 {
     rfx::TrackReader *reader = nullptr;
     size_t local = 0;
+    // When the track is shown with its time base corrected: where its lines are against the corrected time.
+    std::shared_ptr<const TimeBase> base;
 };
+// The four points around a place, a cubic through them (Catmull-Rom): the sample between the second and the third at `t`.
+float cubic(float a, float b, float c, float d, double t)
+{
+    const double t2 = t * t;
+    const double t3 = t2 * t;
+    return static_cast<float>(0.5 * ((2.0 * b) + (-a + c) * t + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2 + (-a + 3.0 * b - 3.0 * c + d) * t3));
+}
 
+// The samples of a track over [start, start + count) of its corrected time, in the units of a converter of its bits: the track is read
+// where its corrected time is (a cubic through four samples), and is zero where it is not there.
+std::vector<double> readCorrected(rfx::TrackReader &reader, size_t local, const rfx::SourceMeta &sm, const TimeBase &base, qint64 start, qint64 count, int bits)
+{
+    const double first = base.sourceAt(static_cast<double>(start));
+    const double last = base.sourceAt(static_cast<double>(start + count - 1));
+    const qint64 from = std::max<qint64>(static_cast<qint64>(std::floor(std::min(first, last))) - 2, 0);
+    const qint64 to = std::min<qint64>(static_cast<qint64>(std::ceil(std::max(first, last))) + 3, static_cast<qint64>(sm.words));
+    std::vector<float> source;
+    if (to > from) {
+        std::vector<int32_t> raw(static_cast<size_t>(to - from), 0);
+        reader.read(local, from, raw.size(), raw.data());
+        source.resize(raw.size());
+        for (size_t i = 0; i < raw.size(); ++i) {
+            source[i] = static_cast<float>(rfx::toConverterUnits(sm.format(), raw[i], bits));
+        }
+    }
+    const auto at = [&](qint64 index) { return index >= from && index < to ? source[static_cast<size_t>(index - from)] : 0.0f; };
+    std::vector<double> out(static_cast<size_t>(count));
+    for (qint64 i = 0; i < count; ++i) {
+        const double x = base.sourceAt(static_cast<double>(start + i));
+        const qint64 j = static_cast<qint64>(std::floor(x));
+        out[static_cast<size_t>(i)] = cubic(at(j - 1), at(j), at(j + 1), at(j + 2), x - static_cast<double>(j));
+    }
+    return out;
+}
+// The speed of the disc over a capture from the fields pass 0 located: at the centre of each field, the line spacing over it against the
+// nominal one (shorter lines are a faster disc), in ppm.
+std::shared_ptr<std::vector<std::pair<double, double>>> speedFromFields(const std::vector<rfx::Field> &fields, double nominal)
+{
+    auto made = std::make_shared<std::vector<std::pair<double, double>>>();
+    for (const rfx::Field &f : fields) {
+        if (f.lines.size() < 20) {
+            continue;
+        }
+        const double spacing = (f.lines.back() - f.lines.front()) / static_cast<double>(f.lines.size() - 1);
+        made->emplace_back((f.lines.front() + f.lines.back()) / 2.0, (nominal / spacing - 1.0) * 1e6);
+    }
+    return made;
+}
 // What the worker is asked for.
 struct Request
 {
@@ -85,13 +136,18 @@ AnalysisResult compute(const Request &q, const std::atomic<quint64> &current)
         const rfx::SourceMeta &sm = reader.meta().sources[local];
         const int ownBits = rfx::carriedBits(sm.format(), sm.shift);
 
-        raw.assign(static_cast<size_t>(q.windowLength), 0);
-        reader.read(local, q.windowStart, raw.size(), raw.data());
-        r.wave[k].resize(raw.size());
-        for (size_t i = 0; i < raw.size(); ++i) {
-            r.wave[k][i] = static_cast<float>(rfx::toConverterUnits(sm.format(), raw[i], q.displayBits));
+        if (q.tracks[k].base) {
+            // The time base corrected: the window is of the corrected time, and the track is read where that time is.
+            const std::vector<double> samples = readCorrected(reader, local, sm, *q.tracks[k].base, q.windowStart, q.windowLength, q.displayBits);
+            r.wave[k].assign(samples.begin(), samples.end());
+        } else {
+            raw.assign(static_cast<size_t>(q.windowLength), 0);
+            reader.read(local, q.windowStart, raw.size(), raw.data());
+            r.wave[k].resize(raw.size());
+            for (size_t i = 0; i < raw.size(); ++i) {
+                r.wave[k][i] = static_cast<float>(rfx::toConverterUnits(sm.format(), raw[i], q.displayBits));
+            }
         }
-
         if (current.load() != q.generation) {
             return;
         }
@@ -99,17 +155,35 @@ AnalysisResult compute(const Request &q, const std::atomic<quint64> &current)
         // padded with zeros, which would be taken for signal. Too little left, and there
         // is nothing to say.
         const qint64 from = q.analysedCenter - q.analysedLength / 2;
-        const qint64 lo = std::max<qint64>(from, 0);
-        const qint64 hi = std::min<qint64>(from + q.analysedLength, static_cast<qint64>(sm.words));
+        qint64 lo = std::max<qint64>(from, 0);
+        qint64 hi = std::min<qint64>(from + q.analysedLength, static_cast<qint64>(sm.words));
+        const TimeBase *base = q.tracks[k].base.get();
+        if (base) {
+            // (on the corrected time the stretch is cut where the capture ends: where its place in it is 0 and its length)
+            lo = from;
+            hi = from + q.analysedLength;
+            const double words = static_cast<double>(sm.words);
+            while (lo < hi && base->sourceAt(static_cast<double>(lo)) < 0.0) {
+                lo += std::max<qint64>(1, (hi - lo) / 64);
+            }
+            while (hi > lo && base->sourceAt(static_cast<double>(hi)) > words) {
+                hi -= std::max<qint64>(1, (hi - lo) / 64);
+            }
+        }
         if (hi - lo < kMinimumRange) {
             r.pastEnd[k] = true;
             return;
         }
-        raw.assign(static_cast<size_t>(hi - lo), 0);
-        reader.read(local, lo, raw.size(), raw.data());
-        std::vector<double> x(raw.size());
-        for (size_t i = 0; i < raw.size(); ++i) {
-            x[i] = rfx::toConverterUnits(sm.format(), raw[i], ownBits);
+        std::vector<double> x;
+        if (base) {
+            x = readCorrected(reader, local, sm, *base, lo, hi - lo, ownBits);
+        } else {
+            raw.assign(static_cast<size_t>(hi - lo), 0);
+            reader.read(local, lo, raw.size(), raw.data());
+            x.resize(raw.size());
+            for (size_t i = 0; i < raw.size(); ++i) {
+                x[i] = rfx::toConverterUnits(sm.format(), raw[i], ownBits);
+            }
         }
         const double rate = sm.rateHz > 0 ? sm.rateHz : q.rateHz;
         r.spectra[k] = rfx::analyseSpectrum(x, static_cast<size_t>(q.fftSize), rate, std::ldexp(1.0, ownBits - 1));
@@ -241,6 +315,23 @@ bool Session::open(const std::vector<Source> &sources, QString *error)
             }
         }
     }
+    // The speed curves an archive keeps are there to be shown at once.
+    {
+        std::lock_guard<std::mutex> lock(m_overviewMutex);
+        m_rfCurves.assign(m_tracks.size(), nullptr);
+        m_rfData.assign(m_tracks.size(), nullptr);
+        m_timebases.assign(m_tracks.size(), nullptr);
+        m_rfStarted.assign(m_tracks.size(), false);
+        for (size_t k = 0; k < m_tracks.size(); ++k) {
+            const rfx::SavedPass0 *saved = m_sources[static_cast<size_t>(m_tracks[k].source)].reader->pass0(m_tracks[k].local);
+            if (saved) {
+                const rfx::VideoSystem system = saved->pal ? rfx::VideoSystem::Pal : rfx::VideoSystem::Ntsc;
+                m_rfCurves[k] = speedFromFields(saved->fields, rfx::nominalLineSamples(saved->rateHz, system));
+                m_rfData[k] = std::make_shared<RfData>(RfData{saved->fields, saved->pal, saved->rateHz});
+                m_rfStarted[k] = true;
+            }
+        }
+    }
     m_visible.assign(m_tracks.size(), true);
     m_selected = 0;
     m_windowLength = std::min(kDefaultWindow, std::max<qint64>(m_total, 1));
@@ -252,9 +343,6 @@ bool Session::open(const std::vector<Source> &sources, QString *error)
     emit opened();
     refresh();
     startOverview();
-    if (m_rfSpeed) {
-        startRfSpeed();
-    }
     return true;
 }
 
@@ -265,13 +353,22 @@ void Session::close()
     }
     ++m_generation;
     ++m_openId;
+    // The speed from the RF reads the captures: stopped, and waited for, before they go.
+    m_speedStop = true;
+    m_speedPool.waitForDone();
     m_pool.waitForDone();
     m_overviewPool.waitForDone();
     {
         std::lock_guard<std::mutex> lock(m_overviewMutex);
         m_overview.clear();
         m_rfCurves.clear();
+        m_rfData.clear();
+        m_timebases.clear();
         m_rfStarted.clear();
+        m_rfPct.reset();
+        m_rfPctCount = 0;
+        m_rfOn.clear();
+        m_aligned.clear();
     }
     m_sources.clear();
     m_tracks.clear();
@@ -570,8 +667,9 @@ void Session::refresh()
     q.displayBits = m_displayBits;
     q.rateHz = m_rateHz;
     q.visible = m_visible;
-    for (const TrackRef &t : m_tracks) {
-        q.tracks.push_back({m_sources[static_cast<size_t>(t.source)].reader.get(), t.local});
+    for (size_t k = 0; k < m_tracks.size(); ++k) {
+        const TrackRef &t = m_tracks[k];
+        q.tracks.push_back({m_sources[static_cast<size_t>(t.source)].reader.get(), t.local, aligned(static_cast<int>(k)) ? timebaseOf(static_cast<int>(k)) : nullptr});
     }
     m_pool.start(QRunnable::create([this, q]() {
         if (m_generation.load() != q.generation) {
@@ -699,30 +797,166 @@ bool Session::coarseWanted() const
     return !upToDate() && m_waiting.isValid() && m_waiting.elapsed() >= kCoarseAfterMs;
 }
 
-void Session::setRfSpeed(bool on)
+bool Session::rfSpeed(int k) const
 {
-    if (on == m_rfSpeed) {
+    return k >= 0 && static_cast<size_t>(k) < m_rfOn.size() && m_rfOn[static_cast<size_t>(k)];
+}
+
+void Session::setRfSpeed(int k, bool on)
+{
+    if (k < 0 || k >= trackCount() || on == rfSpeed(k)) {
         return;
     }
-    m_rfSpeed = on;
+    m_rfOn.resize(m_tracks.size(), false);
+    m_rfOn[static_cast<size_t>(k)] = on;
     if (on) {
-        startRfSpeed();
+        startRfSpeed(k);
     }
     emit rfSpeedChanged();
 }
 
+std::shared_ptr<const std::vector<std::pair<double, double>>> Session::curveOf(int k) const
+{
+    std::lock_guard<std::mutex> lock(m_overviewMutex);
+    if (k >= 0 && static_cast<size_t>(k) < m_rfCurves.size()) {
+        return m_rfCurves[static_cast<size_t>(k)];
+    }
+    return nullptr;
+}
+
+bool Session::curveReady(int k) const
+{
+    const auto curve = curveOf(k);
+    return curve && !curve->empty();
+}
+
+bool Session::canSaveSpeed() const
+{
+    return std::any_of(m_sources.begin(), m_sources.end(), [](const Loaded &l) { return l.reader->keepsSpeed(); });
+}
+
+int Session::saveSpeedCurves(QString *error)
+{
+    int kept = 0;
+    try {
+        for (size_t s = 0; s < m_sources.size(); ++s) {
+            if (!m_sources[s].reader->keepsSpeed()) {
+                continue;
+            }
+            std::map<size_t, rfx::SavedPass0> curves;
+            for (size_t k = 0; k < m_tracks.size(); ++k) {
+                if (static_cast<size_t>(m_tracks[k].source) == s && curveReady(static_cast<int>(k))) {
+                    std::shared_ptr<const RfData> data;
+                    {
+                        std::lock_guard<std::mutex> lock(m_overviewMutex);
+                        data = k < m_rfData.size() ? m_rfData[k] : nullptr;
+                    }
+                    if (data) {
+                        curves[m_tracks[k].local] = rfx::SavedPass0{data->pal, data->rate, data->fields};
+                    }
+                }
+            }
+            if (!curves.empty()) {
+                rfx::savePass0(m_sources[s].reader->path(), curves);
+                kept += static_cast<int>(curves.size());
+            }
+        }
+    } catch (const std::exception &e) {
+        if (error) {
+            *error = QString::fromUtf8(e.what());
+        }
+        return -1;
+    }
+    return kept;
+}
+
+int Session::rfProgressOf(int k) const
+{
+    if (!rfSpeed(k) || curveReady(k)) {
+        return -1;
+    }
+    const int pct = static_cast<size_t>(k) < m_rfPctCount ? m_rfPct[static_cast<size_t>(k)].load() : -1;
+    return pct >= 0 ? pct : -2;
+}
+
+int Session::rfWorkingTracks() const
+{
+    int n = 0;
+    for (size_t k = 0; k < m_rfPctCount; ++k) {
+        n += m_rfPct[k].load() >= 0 ? 1 : 0;
+    }
+    return n;
+}
+
+int Session::rfMeanPercent() const
+{
+    int n = 0;
+    int sum = 0;
+    for (size_t k = 0; k < m_rfPctCount; ++k) {
+        const int pct = m_rfPct[k].load();
+        if (pct >= 0) {
+            ++n;
+            sum += pct;
+        }
+    }
+    return n ? sum / n : 0;
+}
+
+// The time base of a track, once what it is made from is there: its own lines, and (for a track other than the first) those of the first,
+// which give the common axis. Null until then.
+std::shared_ptr<const TimeBase> Session::timebaseOf(int k)
+{
+    std::lock_guard<std::mutex> lock(m_overviewMutex);
+    if (k < 0 || static_cast<size_t>(k) >= m_timebases.size()) {
+        return nullptr;
+    }
+    if (m_timebases[static_cast<size_t>(k)]) {
+        return m_timebases[static_cast<size_t>(k)];
+    }
+    const auto own = m_rfData[static_cast<size_t>(k)];
+    const auto anchor = m_rfData.empty() ? nullptr : m_rfData[0];
+    if (!own || (k != 0 && !anchor)) {
+        return nullptr;
+    }
+    m_timebases[static_cast<size_t>(k)] = TimeBase::make(own->fields, own->pal, own->rate, k == 0 ? nullptr : &anchor->fields);
+    return m_timebases[static_cast<size_t>(k)];
+}
+
+bool Session::aligned(int k) const
+{
+    return k >= 0 && static_cast<size_t>(k) < m_aligned.size() && m_aligned[static_cast<size_t>(k)];
+}
+
+// The time base of a track corrected by its speed (the same curve as the graph of the speed): asking for it asks for the curve.
+void Session::setAligned(int k, bool on)
+{
+    if (k < 0 || k >= trackCount() || on == aligned(k)) {
+        return;
+    }
+    m_aligned.resize(m_tracks.size(), false);
+    m_aligned[static_cast<size_t>(k)] = on;
+    if (on) {
+        setRfSpeed(k, true);
+        if (k != 0) {
+            startRfSpeed(0);   // (the first track gives the axis the others are lined up on)
+        }
+    }
+    emit rfSpeedChanged();
+    refresh();
+}
+
 bool Session::hasSpeed(int k) const
 {
-    if (m_rfSpeed) {
+    if (rfSpeed(k)) {
         std::lock_guard<std::mutex> lock(m_overviewMutex);
         return static_cast<size_t>(k) < m_rfCurves.size() && m_rfCurves[static_cast<size_t>(k)] != nullptr;
     }
     return lagTable(k) != nullptr;
 }
 
-// The lines of every track are located from its RF, one track after the other on a thread of its own (the filters use all the
+// The lines of a track are located from its RF, on a thread of its own (the filters use all the
 // processors); what is made stays until the files change.
-void Session::startRfSpeed()
+void Session::startRfSpeed(int only)
 {
     struct Job
     {
@@ -736,8 +970,15 @@ void Session::startRfSpeed()
         std::lock_guard<std::mutex> lock(m_overviewMutex);
         m_rfCurves.resize(m_tracks.size());
         m_rfStarted.resize(m_tracks.size(), false);
+        if (m_rfPctCount != m_tracks.size()) {
+            m_rfPct = std::make_unique<std::atomic<int>[]>(m_tracks.size());
+            m_rfPctCount = m_tracks.size();
+            for (size_t k = 0; k < m_rfPctCount; ++k) {
+                m_rfPct[k] = -1;
+            }
+        }
         for (size_t k = 0; k < m_tracks.size(); ++k) {
-            if (m_rfStarted[k]) {
+            if (m_rfStarted[k] || static_cast<int>(k) != only) {
                 continue;
             }
             m_rfStarted[k] = true;
@@ -751,31 +992,32 @@ void Session::startRfSpeed()
     }
     const quint64 id = m_openId.load();
     m_rfBusy += static_cast<int>(jobs.size());
-    m_speedPool.setMaxThreadCount(1);
+    // The tracks asked for are worked on together: they share what is decoded of the tracks they are coded against (each by itself
+    // would decode them all again), and the processors are shared between them.
+    m_speedPool.setMaxThreadCount(8);
     m_speedPool.start(QRunnable::create([this, jobs, id]() {
         for (const Job &job : jobs) {
             const auto stale = [this, id] { return m_openId.load() != id || m_speedStop.load(); };
             std::shared_ptr<SpeedCurve> curve;
+            std::shared_ptr<const RfData> data;
             if (!stale()) {
                 try {
                     // NTSC first; a PAL capture gives no field as NTSC.
+                    m_rfPct[static_cast<size_t>(job.track)] = 0;
+                    QMetaObject::invokeMethod(this, [this] { emit rfSpeedProgress(); }, Qt::QueuedConnection);
                     for (const rfx::VideoSystem system : {rfx::VideoSystem::Ntsc, rfx::VideoSystem::Pal}) {
-                        const std::vector<rfx::Field> fields = rfx::locateFields(*job.reader, job.local, job.rate, system, 0, &m_speedStop);
-                        const double nominal = rfx::nominalLineSamples(job.rate, system);
-                        auto made = std::make_shared<SpeedCurve>();
-                        for (const rfx::Field &f : fields) {
-                            if (f.lines.size() < 20) {
-                                continue;
+                        const std::vector<rfx::Field> fields = rfx::locateFields(*job.reader, job.local, job.rate, system, 0, &m_speedStop, [this, job](double done) {
+                            const int percent = std::clamp(static_cast<int>(done * 100.0), 0, 100);
+                            if (percent != m_rfPct[static_cast<size_t>(job.track)].exchange(percent)) {
+                                QMetaObject::invokeMethod(this, [this] { emit rfSpeedProgress(); }, Qt::QueuedConnection);
                             }
-                            // The line spacing over the field against the nominal one: shorter lines are a faster disc.
-                            const double spacing = (f.lines.back() - f.lines.front()) / static_cast<double>(f.lines.size() - 1);
-                            made->emplace_back((f.lines.front() + f.lines.back()) / 2.0, (nominal / spacing - 1.0) * 1e6);
-                        }
+                        });
+                        const auto made = speedFromFields(fields, rfx::nominalLineSamples(job.rate, system));
                         if (!made->empty()) {
                             curve = made;
+                            data = std::make_shared<RfData>(RfData{fields, system == rfx::VideoSystem::Pal, job.rate});
                             break;
-                        }
-                        if (stale()) {
+                        }                        if (stale()) {
                             break;
                         }
                     }
@@ -790,12 +1032,19 @@ void Session::startRfSpeed()
                 std::lock_guard<std::mutex> lock(m_overviewMutex);
                 if (static_cast<size_t>(job.track) < m_rfCurves.size()) {
                     m_rfCurves[static_cast<size_t>(job.track)] = curve;
+                    m_rfData.resize(m_rfCurves.size());
+                    m_rfData[static_cast<size_t>(job.track)] = data;
+                    m_timebases.assign(m_rfCurves.size(), nullptr);   // (the axis of the others may come from this one)
                 }
             }
+            m_rfPct[static_cast<size_t>(job.track)] = -1;
             --m_rfBusy;
             QMetaObject::invokeMethod(this, [this, id] {
                 if (m_openId.load() == id) {
                     emit rfSpeedChanged();
+                    if (std::any_of(m_aligned.begin(), m_aligned.end(), [](bool on) { return on; })) {
+                        refresh();   // (the waveform now has its curve to be aligned by)
+                    }
                 }
             }, Qt::QueuedConnection);
         }
@@ -815,6 +1064,19 @@ double Session::rfSpeedAt(int k, qint64 sample) const
         return 0.0;
     }
     const double x = static_cast<double>(sample);
+    // The mean over the same stretch as the stored speed is read over (speedWindow): the discs speed varies from one field to the next
+    // by far more than over a few hundredths of the capture, and the two ways of getting the speed must show the same quantity.
+    const double half = static_cast<double>(speedWindow(k)) / 2.0;
+    const auto byPlace = [](const std::pair<double, double> &p, double v) { return p.first < v; };
+    const auto lo = std::lower_bound(curve->begin(), curve->end(), x - half, byPlace);
+    const auto hi = std::lower_bound(curve->begin(), curve->end(), x + half, byPlace);
+    if (hi - lo >= 2) {
+        double sum = 0.0;
+        for (auto it = lo; it != hi; ++it) {
+            sum += it->second;
+        }
+        return sum / static_cast<double>(hi - lo);
+    }
     const auto next = std::lower_bound(curve->begin(), curve->end(), x, [](const std::pair<double, double> &p, double v) { return p.first < v; });
     if (next == curve->begin()) {
         return next->second;
@@ -840,7 +1102,7 @@ qint64 Session::speedWindow(int k) const
 
 double Session::speedAt(int k, qint64 sample) const
 {
-    if (m_rfSpeed) {
+    if (rfSpeed(k)) {
         return rfSpeedAt(k, sample);
     }
     const rfx::LagTable *t = lagTable(k);

@@ -10,6 +10,8 @@
  ******************************************************************************/
 
 #include "appearancemenus.h"
+#include "archive.h"
+#include "rfsync.h"
 #include "capturedialog.h"
 #include "deviationview.h"
 #include "ffmpeg.h"
@@ -147,6 +149,7 @@ private slots:
     void graphsFollowTheSizeAndShowValues();
     void compactModeAndSpectrumControls();
     void decodesCompressedCaptures();
+    void alignsRealCaptures();
     void speedFromTheRf();
     void showsTheSidecarOfACapture();
 
@@ -437,7 +440,32 @@ void AnalyseGuiTests::viewsHaveWhatToShow()
     // as the line of no deviation, the other as its speed against it.
     auto *deviation = w.findChild<DeviationBlock *>("combinedDeviation")->findChild<DeviationView *>();
     QVERIFY(deviation);
+    // Nothing until the speed is asked for from the RF (the stored one is relative to the reference).
+    QVERIFY(deviation->curves().isEmpty());
+    session->setRfSpeed(true);
+    QCOMPARE(deviation->curves(), (QVector<int>{0}));
+    // The box of the combined view is about every track shown.
+    auto *rfBox = w.findChild<DeviationBlock *>("combinedDeviation")->findChild<QCheckBox *>("rfSpeedBox");
+    rfBox->setChecked(true);
     QCOMPARE(deviation->curves(), (QVector<int>{0, 1}));
+    // The box stays on for the tracks that are shown after: one put away and shown again is worked out again.
+    session->setVisible(1, false);
+    session->setRfSpeed(1, false);
+    session->setVisible(1, true);
+    QVERIFY(session->rfSpeed(1));
+    rfBox->setChecked(false);
+    QVERIFY(!session->rfSpeed(0) && !session->rfSpeed(1));
+    session->setRfSpeed(0, true);
+    // The amplitude of the graph: auto, or set in the menu of the title bar.
+    {
+        auto *range = w.findChild<DeviationBlock *>("combinedDeviation")->findChild<QComboBox *>("speedRange");
+        QVERIFY(range);
+        QCOMPARE(deviation->range(), 0.0);
+        range->setCurrentIndex(range->findData(200.0));
+        QCOMPARE(deviation->range(), 200.0);
+        range->setCurrentIndex(0);
+        QCOMPARE(deviation->range(), 0.0);
+    }
     session->setVisible(1, false);
     QCOMPARE(deviation->curves(), QVector<int>{0});
     session->setVisible(0, false);
@@ -457,6 +485,28 @@ void AnalyseGuiTests::viewsHaveWhatToShow()
     w.setView(QStringLiteral("individual"));
     QVERIFY(settle(*session));
     QCOMPARE(w.findChildren<SpectrumView *>().size() >= 2, true);
+    {
+        // The selected track alone has its curve of speed, once it is asked for by the box of its block, and that asks for it alone.
+        QVERIFY(session->rfSpeed(0));
+        QVERIFY(!session->rfSpeed(1));
+        int shown = 0;
+        for (auto *block : w.findChildren<DeviationBlock *>()) {
+            if (block->objectName() != QLatin1String("combinedDeviation") && block->isVisibleTo(&w)) {
+                auto *view = block->findChild<DeviationView *>();
+                QVERIFY(view);
+                QVERIFY(view->curves().isEmpty());
+                block->findChild<QCheckBox *>("rfSpeedBox")->setChecked(true);
+                QVERIFY(session->rfSpeed(1));
+                QVERIFY(session->rfSpeed(0));
+                QCOMPARE(view->curves(), QVector<int>{1});
+                QVERIFY(view->isVisibleTo(&w));
+                ++shown;
+            }
+        }
+        QCOMPARE(shown, 1);
+    }
+    session->setRfSpeed(0, false);
+    session->setRfSpeed(1, false);
     w.setView(QStringLiteral("lanes"));
     QVERIFY(settle(*session));
     w.setView(QStringLiteral("combined"));
@@ -667,7 +717,11 @@ void AnalyseGuiTests::opensSeveralFiles()
     session->setSelected(1);
     QCOMPARE(panel->topLevelItemCount(), 4);
     auto *deviation = w.findChild<DeviationBlock *>("combinedDeviation")->findChild<DeviationView *>();
-    QCOMPARE(deviation->curves(), (QVector<int>{0, 1}));
+    QVERIFY(deviation->curves().isEmpty());
+    session->setRfSpeed(true);
+    QCOMPARE(deviation->curves(), (QVector<int>{1}));
+    session->setRfSpeed(0, false);
+    session->setRfSpeed(1, false);
     w.setView(QStringLiteral("lanes"));
     QVERIFY(settle(*session));
     QVERIFY(w.saveScreenshot(m_dir.filePath("several.png")));
@@ -881,11 +935,11 @@ void AnalyseGuiTests::graphsFollowTheSizeAndShowValues()
     // Not following: the gain stays (the axis goes further out), and a wider graph shows more time.
     gain->setChecked(false);
     const double kept = amplitude->value();
-    w.resize(1000, 950);
+    w.resize(1200, 950);
     QTest::qWait(150);
     QCOMPARE(amplitude->value(), kept);
     const qint64 before = session->windowLength();
-    w.resize(1300, 950);
+    w.resize(1500, 950);
     QTest::qWait(150);
     QVERIFY(session->windowLength() > before);
     gain->setChecked(true);
@@ -1106,9 +1160,134 @@ void AnalyseGuiTests::speedFromTheRf()
     QVERIFY(!session->speedIsZero(0));
     session->setRfSpeed(false);
     QVERIFY(!session->hasSpeed(0));
+
+    // The same capture inside an .rfx file (the predictor), and in the FLAC and raw variants: the curve comes from the RF of the track
+    // as it is read from the file.
+    {
+        rfx::PackOptions pack;
+        pack.threads = 2;
+        pack.order = rfx::OrderMode::Given;
+        pack.segment = 65536;
+        pack.rateMhz = 40.0;
+        const QString archive = m_dir.filePath("fast.rfx");
+        rfx::packCaptures({path}, archive, pack);
+        Session inArchive;
+        QString error;
+        QVERIFY2(inArchive.open(archive, &error), qPrintable(error));
+        inArchive.setRfSpeed(true);
+        QElapsedTimer waitedArchive;
+        waitedArchive.start();
+        while ((inArchive.rfSpeedBusy() || !inArchive.hasSpeed(0)) && waitedArchive.elapsed() < 60000) {
+            QTest::qWait(20);
+        }
+        QVERIFY(inArchive.hasSpeed(0));
+        const double inFile = inArchive.speedAt(0, 2000000);
+        QVERIFY2(std::fabs(inFile - 1000.0) < 25.0, qPrintable(QString::number(inFile)));
+        // Aligned, the waveform is the track with its time base corrected: a different one from the track as it is read.
+        QVERIFY(inArchive.canSaveSpeed());
+        inArchive.setWindowStart(1900000);
+        QVERIFY(settle(inArchive));
+        const std::vector<float> plain = inArchive.result().wave[0];
+        inArchive.setAligned(0, true);
+        // (the same curve as the graph of the speed: nothing is worked out again)
+        QVERIFY(!inArchive.rfSpeedBusy());
+        QCOMPARE(inArchive.rfProgressOf(0), -1);
+        QVERIFY(settle(inArchive));
+        QVERIFY(inArchive.aligned(0));
+        const std::vector<float> corrected = inArchive.result().wave[0];
+        QCOMPARE(corrected.size(), plain.size());
+        QVERIFY(corrected != plain);
+        inArchive.setAligned(0, false);
+        // The curve kept in the file (at its end, nothing else changes) is there when it is opened again, with no work.
+        QString saveError;
+        QCOMPARE(inArchive.saveSpeedCurves(&saveError), 1);
+        inArchive.close();
+        Session again;
+        QVERIFY2(again.open(archive, &error), qPrintable(error));
+        QVERIFY(again.curveReady(0));
+        QVERIFY(!again.rfSpeedBusy());
+        again.setRfSpeed(true);
+        QVERIFY(again.hasSpeed(0));
+        QVERIFY2(std::fabs(again.speedAt(0, 2000000) - 1000.0) < 25.0, qPrintable(QString::number(again.speedAt(0, 2000000))));
+        again.close();
+        // (the archive is still one: the samples are read back as they were)
+        QVERIFY(rfx::archiveInfo(archive).size() > 0);
+        // The lines can also be located and kept by the library (what rf-packer does): the speed is there when the file is opened.
+        const QString other = m_dir.filePath("fast-kept.rfx");
+        rfx::packCaptures({path}, other, pack);
+        QCOMPARE(rfx::keepPass0(other, 40.0, true), size_t(1));
+        QCOMPARE(rfx::keepPass0(other, 40.0, true), size_t(0));   // (nothing left to do)
+        Session kept;
+        QVERIFY2(kept.open(other, &error), qPrintable(error));
+        QVERIFY(kept.curveReady(0));
+        kept.setRfSpeed(true);
+        QVERIFY2(std::fabs(kept.speedAt(0, 2000000) - 1000.0) < 25.0, qPrintable(QString::number(kept.speedAt(0, 2000000))));
+        kept.close();
+    }
     session->close();
 }
 
+// With RFX_REAL_RFX set to an .rfx file of several captures of one disc: once the time base of each is corrected, the captures
+// are lined up on one axis, so that they agree with one another better than they do as they were read (a long test: opt-in).
+void AnalyseGuiTests::alignsRealCaptures()
+{
+    const QString path = qEnvironmentVariable("RFX_REAL_RFX");
+    if (path.isEmpty()) {
+        QSKIP("RFX_REAL_RFX is not set");
+    }
+    Session s;
+    QString error;
+    QVERIFY2(s.open(path, &error), qPrintable(error));
+    const int count = std::min(s.trackCount(), 4);
+    s.setWindowStart(10000000);
+    s.zoomBy(32.0, 10000000);
+    QVERIFY(settle(s));
+    const auto correlate = [&](const std::vector<float> &a, const std::vector<float> &b) {
+        double ab = 0, aa = 0, bb = 0;
+        for (size_t i = 0; i < std::min(a.size(), b.size()); ++i) {
+            ab += double(a[i]) * b[i];
+            aa += double(a[i]) * a[i];
+            bb += double(b[i]) * b[i];
+        }
+        return ab / std::sqrt(aa * bb);
+    };
+    std::vector<double> plain;
+    for (int k = 1; k < count; ++k) {
+        plain.push_back(correlate(s.result().wave[0], s.result().wave[k]));
+    }
+    for (int k = 0; k < count; ++k) {
+        s.setAligned(k, true);
+    }
+    QElapsedTimer waited;
+    waited.start();
+    while (s.rfSpeedBusy() && waited.elapsed() < 600000) {
+        QTest::qWait(100);
+    }
+    QVERIFY(settle(s));
+    // Along the capture, every pair of tracks, not only those with the first: all of them agree, in the vertical interval too.
+    s.resetZoom();
+    const qint64 total = s.totalSamples();
+    for (int place = 1; place <= 9; ++place) {
+        for (int step = 0; step < 6; ++step) {
+            s.setWindowStart(total * place / 10 + step * 16384);
+            QVERIFY(settle(s));
+            for (int a = 0; a < count; ++a) {
+                for (int b = a + 1; b < count; ++b) {
+                    const double c = correlate(s.result().wave[static_cast<size_t>(a)], s.result().wave[static_cast<size_t>(b)]);
+                    QVERIFY2(c > 0.9, qPrintable(QString("tracks %1 and %2 at %3: %4").arg(a).arg(b).arg(s.windowStart()).arg(c)));
+                }
+            }
+        }
+    }
+    for (int k = 1; k < count; ++k) {
+        s.zoomBy(32.0, 10000000);
+        s.setWindowStart(10000000);
+        QVERIFY(settle(s));
+        const double aligned = correlate(s.result().wave[0], s.result().wave[k]);
+        qInfo() << "track" << k << "against 0: correlation as read" << plain[static_cast<size_t>(k - 1)] << "aligned" << aligned;
+        QVERIFY(aligned > plain[static_cast<size_t>(k - 1)]);
+    }
+}
 void AnalyseGuiTests::decodesCompressedCaptures()
 {
     // A FLAC as ld-decode writes it: the rate in kHz in its header (40000 for 40 MHz).

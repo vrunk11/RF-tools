@@ -111,11 +111,9 @@ void MetadataPanel::rebuild()
     QString speed = tr("n/a");
     QString speedRange = tr("n/a");
     QString lag = tr("n/a");
-    if (m_session->speedIsZero(k)) {
-        speed = tr("0 ppm (the reference)");
-        speedRange = tr("0");
+    if (m_session->isReference(k) && !m_session->rfSpeed(k)) {
         lag = tr("0 (the reference)");
-    } else if (m_session->rfSpeed() ? m_session->hasSpeed(k) : (table && !table->lag.empty())) {
+    } else if (m_session->rfSpeed(k) && m_session->hasSpeed(k)) {
         const auto ppm = [](double v) { return (std::round(v) > 0 ? QStringLiteral("+") : QString()) + QString::number(std::round(v), 'f', 0); };
         speed = ppm(m_session->speedAt(k, m_session->selection().center)) + tr(" ppm");
         double lo = 1e18;
@@ -130,6 +128,8 @@ void MetadataPanel::rebuild()
         if (table) {
             lag = fmt::signedNumber(table->lagAt(m_session->selection().center)) + tr(" samples");
         }
+    } else if (table && !table->lag.empty()) {
+        lag = fmt::signedNumber(table->lagAt(m_session->selection().center)) + tr(" samples");
     }
     // The references, among all the tracks.
     QString refs;

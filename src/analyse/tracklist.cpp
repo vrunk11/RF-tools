@@ -25,6 +25,7 @@ namespace {
 
 constexpr int kRowHeight = 44;
 constexpr int kCheckWidth = 30;
+constexpr int kProgressRole = Qt::UserRole + 1;
 
 } // namespace
 
@@ -81,6 +82,22 @@ public:
         p->drawEllipse(QRectF(option.rect.left() + kCheckWidth + 6, option.rect.top() + (option.rect.height() - 10) / 2.0, 10, 10));
         p->setRenderHint(QPainter::Antialiasing, false);
 
+        // The speed from the RF (also the time base correction) being worked out for the track: a bar along the foot of the row,
+        // filled as far as it is done, or hatched while the track waits for its turn.
+        const int progress = index.data(kProgressRole).toInt();
+        if (progress != -1) {
+            const QRect rail(option.rect.left() + kCheckWidth + 18, option.rect.bottom() - 7, option.rect.width() - kCheckWidth - 18 - 10, 4);
+            QColor faint = trackColor;
+            faint.setAlphaF(0.30);
+            p->fillRect(rail, faint);
+            if (progress >= 0) {
+                p->fillRect(QRect(rail.left(), rail.top(), rail.width() * progress / 100, rail.height()), trackColor);
+            } else {
+                p->setPen(QPen(trackColor, 1, Qt::DotLine));
+                p->drawLine(rail.left(), rail.center().y(), rail.right(), rail.center().y());
+            }
+        }
+
         const int textLeft = option.rect.left() + kCheckWidth + 18;
         const int arrow = selected ? 16 : 0;
         const QRect text(textLeft, option.rect.top() + 4, option.rect.right() - textLeft - arrow - 4, option.rect.height() - 8);
@@ -119,6 +136,20 @@ TrackList::TrackList(Session *session, QWidget *parent) : QListWidget(parent), m
     connect(session, &Session::opened, this, &TrackList::rebuild);
     connect(session, &Session::closed, this, &TrackList::rebuild);
     connect(session, &Session::changed, this, &TrackList::refreshChecks);
+    connect(session, &Session::rfSpeedChanged, this, &TrackList::refreshProgress);
+    connect(session, &Session::rfSpeedProgress, this, &TrackList::refreshProgress);
+}
+
+// The bars of the speed being worked out.
+void TrackList::refreshProgress()
+{
+    if (count() != m_session->trackCount()) {
+        return;
+    }
+    for (int k = 0; k < count(); ++k) {
+        item(k)->setData(kProgressRole, m_session->rfProgressOf(k));
+    }
+    viewport()->update();
 }
 
 void TrackList::setPanelShown(bool shown)
@@ -138,6 +169,7 @@ void TrackList::rebuild()
         item->setFlags(Qt::ItemIsEnabled | Qt::ItemIsSelectable);
         item->setCheckState(m_session->visible(k) ? Qt::Checked : Qt::Unchecked);
         item->setData(Qt::DecorationRole, m_session->color(k));
+        item->setData(kProgressRole, m_session->rfProgressOf(k));
         // The second line: how long it is and what it takes in the file.
         item->setData(Qt::ToolTipRole, fmt::duration(static_cast<double>(sm.words) / rate) + QStringLiteral(" · ") + fmt::bytes(m_session->storedBytes(k)));
     }

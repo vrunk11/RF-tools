@@ -84,6 +84,19 @@ public:
     void setView(const QString &name);
     // Start with the speed measured from the RF (the "From RF" box of the speed deviation).
     void setRfSpeed(bool on) { m_session->setRfSpeed(on); }
+    // The track selected (0 to count - 1).
+    void selectTrack(int k) { m_session->setSelected(k); }
+    // The speed from the RF for every track at once.
+    void setAlignAll() {
+        for (int k = 0; k < m_session->trackCount(); ++k) {
+            m_session->setAligned(k, true);
+        }
+    }
+    void setRfSpeedAll() {
+        for (int k = 0; k < m_session->trackCount(); ++k) {
+            m_session->setRfSpeed(k, true);
+        }
+    }
     // Wait for the views to be up to date and write what the window shows to a
     // PNG file; false if it could not be written.
     bool saveScreenshot(const QString &path);
@@ -96,9 +109,11 @@ private:
     void buildMenus();
     QWidget *buildCombined();
     void buildLanes();
+    QCheckBox *alignBox(QWidget *parent, const QVector<int> &tracks);
     void chooseFile();
     void chooseFolder();
     void exportYaml();
+    void saveSpeed();
     void closeFile();
     void showMetadata(bool shown);
     void updateRecent();
@@ -184,9 +199,11 @@ private:
 
     QLabel *m_statusTracks = nullptr;
     QLabel *m_statusDuration = nullptr;
+    QLabel *m_statusSpeed = nullptr;
     QLabel *m_statusFile = nullptr;
     QMenu *m_recentMenu = nullptr;
     AppearanceMenus *m_appearance = nullptr;
+    QAction *m_saveSpeedAction = nullptr;
     QAction *m_exportAction = nullptr;
     QAction *m_closeAction = nullptr;
     QAction *m_metadataAction = nullptr;

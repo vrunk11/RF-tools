@@ -51,23 +51,38 @@ move. A file of many gigabytes opens at once.
   that overlap by half (FFT of 1,024, 4,096 or 16,384). 0 dB is a sine that fills the range. The
   shaded band, 0 to 14 MHz (or 1.5 MHz short of the Nyquist limit), is the one the statistics are
   made over.
-- **Speed deviation over time**: how much faster or slower each track of an `.rfx` file runs than
-  its reference, in parts per million, over the whole capture. **Zero in the middle is the speed
-  the capture was made at, with no TBC correction; above is faster (an acceleration), below is
-  slower (a slowing down)**, so that the oscillation of the signal can be seen. The primary track
-  is the reference: it is the line of no deviation. The others are the slope of their lag table
-  against it (more of the reference passes under each sample of the track when it is faster),
-  measured over a few hundredths of the capture, so that the rounding of the lag to whole samples
-  does not show; a jump (a sample lost or repeated) is a burst where it happened. It comes from
-  the lag tables, without decoding. A click on the graph puts the bar there. A capture on its own
-  has no reference and no curve.
+- **The pass 0 curve.** Two graphs need to know where the lines of a capture are: the speed of the disc, and the time base correction. Both
+  come from the same thing, the **pass 0 curve** of the capture: pass 0 (the one of ld-decode, ported: the same positions to the bit)
+  locates every line of the capture from its RF, with the frame code of each field. NTSC is tried first, then PAL. It takes minutes on a
+  large capture (a track coded against others needs them decoded first), so it is **never done unasked**, and only for the tracks that are
+  asked for: the box *From RF* of the speed graph and the box *Align capture* of a waveform both ask for it, and once a track has its
+  curve neither works it out again. The tracks asked for are worked on together and share what they decode (`--rf-speed-all` and
+  `--align` start every track on the command line). Meanwhile the speed graph says so in place of its curve, the list of tracks has a bar
+  along the foot of each track being worked on (filled as far as it is done, dotted while it waits), and the status bar gives the number
+  of tracks and how far they are. The curve is kept until the files change. A curve that is worked out can be kept in the file: **File >
+  Save speed curve** (for an `.rfx` file of the predictor variant) adds the lines of pass 0 to the end of the file (a few megabytes at
+  most, nothing else is rewritten; specification 3.1) and they are there at once when it is opened again; rf-packer does the same for a file
+  (**File > Compute the pass 0 curve**, or the box of the options when it writes one).
+- **Align capture** (a box in the heading of each waveform: of the combined view for the tracks shown, of a lane for its track): the
+  time base of each capture corrected, as before stacking them. The signal is resampled (a cubic through four samples) so that each
+  line is at its place at the nominal speed, and the place is the same in every capture: a field takes the place the field with the
+  same frame code has in the first track, so that the captures are lined up with one another (on a test, the correlation of two captures
+  over a window goes from 0.01 to 0.998). The waveform, the spectrum and the statistics are all those of the corrected signal. It needs the
+  pass 0 curve of the track and of the first one (which gives the axis): the program asks whether to work out the ones that are missing,
+  for the tracks shown only (the first one is worked out too, when it is not shown, and the message says so), and the box takes effect
+  when it is done. The box stays on for the tracks that are shown afterwards: a track ticked in the list while it is on is aligned too, and
+  asked for when it has no curve.
+- **Speed deviation over time**: how fast or slow each track runs, in parts per million, over the whole capture, from its pass 0 curve: at
+  each field, the spacing of the lines against the nominal one (63.556 us NTSC, 64 us PAL), averaged over a few hundredths of the
+  capture. Above 0 is faster, below is slower. It is **not there until asked for**: the **From RF** box in the title bar of the block
+  (off to begin with; `--rf-speed` on the command line, for the track of `--track`) asks for the curve. Any track can have one, the
+  reference and a capture on its own included. The box of a lane (individual view, all lanes) is about its track; the one of the combined
+  view is about every track shown (untick a track in the list to leave it out), stays on for the tracks ticked afterwards, and the
+  combined view draws every track that was asked for. The lag tables stored in an .rfx file are relative to the reference (not to the
+  nominal speed), so they are not drawn (the metadata panel still shows the lag). A click on the graph puts the bar there.
 
-  **From RF** (a box in the title bar of the block, off to begin with; `--rf-speed` on the command line)
-  measures the speed from the signal itself instead, whether the stored curve is there or not: the lines of every track are
-  located from its RF (the pass 0 of ld-decode, ported: the same positions to the bit) and the speed is the spacing of the
-  lines of each field against the nominal one (63.556 us NTSC, 64 us PAL), in the same ppm, above faster and below slower.
-  The reference gets a curve of its own then, and so does a capture on its own. It is worked out in the background, a track
-  after the other (the title bar says so meanwhile), and kept until the files change. NTSC is tried first, then PAL.
+  **Range** (a menu in the title bar, or the wheel over the graph) sets the amplitude of the graph: auto fits the largest deviation, or a fixed
+  range of 5 to 100000 ppm above and below 0 (the wheel forward zooms in, backward out). It is remembered.
 - **Statistics**: for every track, over the same stretch as the spectrum:
 
   | | |

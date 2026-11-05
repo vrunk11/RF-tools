@@ -68,6 +68,9 @@ int main(int argc, char *argv[])
     for (const QCommandLineOption *o : {&view, &screenshot, &size, &format, &rate, &bits}) {
         parser.addOption(*o);
     }
+    parser.addOption(QCommandLineOption(QStringLiteral("track"), QStringLiteral("The track to select at the start, from 0."), QStringLiteral("n")));
+    parser.addOption(QCommandLineOption(QStringLiteral("align"), QStringLiteral("Start with the time base of every track corrected (Align capture): the speed is worked out from the RF first.")));
+    parser.addOption(QCommandLineOption(QStringLiteral("rf-speed-all"), QStringLiteral("Start with the speed measured from the RF for every track (they are worked on together).")));
     parser.addOption(QCommandLineOption(QStringLiteral("rf-speed"), QStringLiteral("Start with the speed deviation measured from the RF (the From RF box).")));
     parser.addOption(QCommandLineOption(QStringLiteral("force-dark-theme"), QStringLiteral("Force the dark theme, whatever the system and the setting say.")));
     parser.addPositionalArgument(QStringLiteral("file"), QStringLiteral("The .rfx files and the captures (.s16 .r16 .s8 .r8 .lds .flac .ldf) to open."),
@@ -145,8 +148,17 @@ int main(int argc, char *argv[])
             return kExitFailed;
         }
     }
+    if (parser.isSet(QStringLiteral("track"))) {
+        window.selectTrack(parser.value(QStringLiteral("track")).toInt());
+    }
     window.setView(parser.value(view));
     window.setRfSpeed(parser.isSet(QStringLiteral("rf-speed")));
+    if (parser.isSet(QStringLiteral("align"))) {
+        window.setAlignAll();
+    }
+    if (parser.isSet(QStringLiteral("rf-speed-all"))) {
+        window.setRfSpeedAll();
+    }
     if (parser.isSet(screenshot)) {
         return window.saveScreenshot(parser.value(screenshot)) ? 0 : kExitFailed;
     }
