@@ -341,6 +341,25 @@ static void answerNextBox(QMessageBox::StandardButton button, QString *text)
     });
 }
 
+// The next boxes that ask something are answered in this order, whatever they are (the text of each is kept in `seen`).
+static void answerBoxes(QList<QMessageBox::StandardButton> answers, QStringList *seen)
+{
+    if (answers.isEmpty()) {
+        return;
+    }
+    QTimer::singleShot(50, qApp, [answers, seen] {
+        auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+        if (!box || !box->button(answers.first())) {
+            answerBoxes(answers, seen);
+            return;
+        }
+        seen->push_back(box->text());
+        const QMessageBox::StandardButton pressed = answers.first();
+        box->button(pressed)->click();
+        answerBoxes(answers.mid(1), seen);
+    });
+}
+
 // The next box that lists the tracks whose standard seems wrong is answered: `accept` presses Update, otherwise the cross of the first track is pressed.
 static void answerStandards(bool accept, bool *seen)
 {
@@ -1470,8 +1489,51 @@ void AnalyseGuiTests::speedFromTheRf()
                     QVERIFY(!inside->curveReady(0));
                 }
                 QCOMPARE(!asked.isEmpty(), c.answer != QMessageBox::NoButton);
+                if (!c.worked && c.answer != QMessageBox::NoButton) {
+                    // A refusal is not remembered: it is asked again the next time the work is asked for, by the button of the panel too, and the box
+                    // Align capture goes back off when it is refused.
+                    QString again;
+                    answerNextBox(c.answer, &again);
+                    auto *button = window.findChild<QPushButton *>("computeTrack");
+                    QVERIFY(button);
+                    button->click();
+                    QVERIFY(!again.isEmpty());
+                    QVERIFY(!inside->curveReady(0));
+                    auto *align = window.findChild<QCheckBox *>("alignBox");
+                    QVERIFY(align);
+                    QString third;
+                    answerNextBox(c.answer, &third);
+                    align->setChecked(true);
+                    QVERIFY(!third.isEmpty());
+                    QVERIFY(!align->isChecked());
+                }
                 QCOMPARE(QString::fromStdString(rfx::Archive(file).meta().medium), QString::fromLatin1(c.written));
                 QCOMPARE(QString::fromStdString(inside->mediumOf(0)), QString::fromLatin1(c.written));
+            }
+            // What is answered is for the action it is answered in: Align capture with Yes to the LaserDisc and then No to working the curve out
+            // leaves nothing behind, and the button of the panel asks about the LaserDisc again.
+            {
+                rfx::PackOptions said = pack;
+                said.medium = std::string();
+                const QString file = m_dir.filePath(QStringLiteral("fast-source-action.rfx"));
+                rfx::packCaptures({path}, file, said);
+                MainWindow window;
+                QVERIFY(window.openFile(file));
+                auto *inside = window.findChild<Session *>();
+                auto *align = window.findChild<QCheckBox *>("alignBox");
+                auto *button = window.findChild<QPushButton *>("computeTrack");
+                QVERIFY(inside && align && button);
+                QStringList seen;
+                answerBoxes({QMessageBox::Yes, QMessageBox::No}, &seen);
+                align->setChecked(true);
+                QCOMPARE(seen.size(), 2);   // (the LaserDisc, then whether to work the curve out)
+                QVERIFY(!align->isChecked());
+                QVERIFY(!inside->curveReady(0));
+                QStringList again;
+                answerBoxes({QMessageBox::Yes}, &again);
+                button->click();
+                QCOMPARE(again.size(), 1);   // (asked again: the Yes of the action that was cancelled is gone)
+                QTRY_VERIFY_WITH_TIMEOUT(inside->curveReady(0) && !inside->rfSpeedBusy(), 60000);
             }
         }
     }
