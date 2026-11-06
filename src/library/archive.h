@@ -58,7 +58,7 @@ public:
     // The segments of track `k`, by segment number.
     const std::unordered_map<uint64_t, BlockSpan> &blocks(size_t k) const { return m_blocks[k]; }
     PosFile &file() { return *m_file; }
-    // The speed curves the archive keeps, by track (none when it keeps none).
+    // The TBC curves the archive keeps, by track (none when it keeps none).
     const std::map<size_t, SavedPass0> &pass0() const { return m_pass0; }
 
     // Bytes the coded segments of track `k` take.
@@ -72,7 +72,7 @@ private:
     std::unique_ptr<PosFile> m_file;
 };
 
-// Keep speed curves in the archive, by track: a block added at the end of the file (nothing else is rewritten), which replaces the ones
+// Keep TBC curves in the archive, by track: a block added at the end of the file (nothing else is rewritten), which replaces the ones
 // kept before. Throws rfx::Error when the file is not a predictor archive or cannot be written.
 void savePass0(const QString &path, const std::map<size_t, SavedPass0> &tracks);
 

@@ -77,7 +77,7 @@ std::string bitsPerSample(uint64_t packed, uint64_t words)
     return format("%.3f", static_cast<double>(packed) * 8.0 / static_cast<double>(std::max<uint64_t>(words, 1)));
 }
 
-// The timestamp of the cluster of the metadata track that holds the speed curves (0 is the metadata).
+// The timestamp of the cluster of the metadata track that holds the TBC curves (0 is the metadata).
 constexpr uint64_t kSpeedTimestamp = 1;
 
 } // namespace
@@ -130,7 +130,7 @@ Archive::Archive(const QString &path)
         }
         m_tables[{k, j}] = LagTable::decode(table.data() + at, table.size() - at);
     }
-    // The speed curves (specification 3.1): the last block of the metadata track after the first one.
+    // The TBC curves (specification 3.1): the last block of the metadata track after the first one.
     {
         const ebml::BlockRef *speed = nullptr;
         for (const ebml::BlockRef &b : idx.blocks) {

@@ -17,13 +17,22 @@
 #include <atomic>
 #include <functional>
 #include <optional>
+#include <array>
 #include <cstddef>
+#include <string>
 #include <vector>
 
 namespace rfx {
 
 // The video system the lines are located for.
 enum class VideoSystem { Ntsc, Pal };
+
+// The system a standard says (the `standard` of a track: PAL and SECAM are 625 lines, PAL-M, NTSC and NTSC-VHD are 525); nothing when it says nothing.
+std::optional<VideoSystem> systemOfStandard(const std::string &standard);
+
+// The systems to try for a track, in order: the one its standard says first, and the other after it in case what was said is wrong; NTSC then
+// PAL when it says nothing.
+std::array<VideoSystem, 2> systemsToTry(const std::string &standard);
 
 // Locate every line of track `track` of `reader`, from its RF, without demodulating it (a port of the `rfsync` module of
 // ld-decode-rust, the pass 0 of its read-time TBC): the carrier is lowest during a sync pulse, so a coarse frequency estimate

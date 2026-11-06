@@ -48,6 +48,12 @@ namespace rfx {
 
 namespace {
 
+// Whether the lines of the captures are located as a PAL disc: asked for with --pal, or said by the standard given for them (625 lines: PAL, SECAM).
+bool packIsPal(const PackOptions &o)
+{
+    return o.pal || (o.info.standard && systemOfStandard(*o.info.standard) == VideoSystem::Pal);
+}
+
 // Windows (of kChooseWindow samples, spread through the target) on which the
 // references of a capture are compared.
 constexpr size_t kChooseWindows = 4;
@@ -348,7 +354,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
                 capture.bits = 16;
                 TrackReader reader(inputs[i], capture);
                 int shown = -1;
-                fields[i] = locateFields(reader, 0, fs, o.pal ? VideoSystem::Pal : VideoSystem::Ntsc, o.threads, nullptr, [&](double part) {
+                fields[i] = locateFields(reader, 0, fs, packIsPal(o) ? VideoSystem::Pal : VideoSystem::Ntsc, o.threads, nullptr, [&](double part) {
                     const int percent = static_cast<int>(part * 100.0);
                     if (percent != shown) {
                         shown = percent;
@@ -518,6 +524,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
             sm.standard = from->standard;
             sm.reference = from->reference;
             sm.copy = from->copy;
+            sm.capture = from->capture;
             sm.face = from->face;
             sm.signal = from->signal;
         } else {
@@ -611,7 +618,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
     }
     phase("references chosen");
     prepared->fields = std::move(fields);
-    prepared->pal = o.pal;
+    prepared->pal = packIsPal(o);
     prepared->fieldsRateHz = fieldsRate;
     return prepared;
 }
@@ -855,7 +862,25 @@ std::vector<PackedTrack> packCapturesLike(const std::vector<QString> &inputs, co
     // Cut into segments as the archive was.
     o.segment = like.meta().segment;
     std::unique_ptr<PreparedPack> prepared = prepareCaptures(inputs, specs, known, output, o);
-    return writePrepared(*prepared, output, o, std::vector<std::optional<CopiedTrack>>(inputs.size()));
+    std::vector<PackedTrack> report = writePrepared(*prepared, output, o, std::vector<std::optional<CopiedTrack>>(inputs.size()));
+    // The TBC curve belongs to the track: the ones that were in the archive stay with their tracks (the lines of the disc do not move when the
+    // samples are requantised).
+    std::map<size_t, SavedPass0> kept;
+    for (size_t k = 0; k < tracks.size(); ++k) {
+        const auto found = like.pass0().find(tracks[k]);
+        if (found != like.pass0().end()) {
+            kept[k] = found->second;
+        }
+    }
+    if (!kept.empty()) {
+        // (what writePrepared kept for the tracks that have no curve yet, with keepPass0, stays: the curves are added to those)
+        std::map<size_t, SavedPass0> all = Archive(output).pass0();
+        for (auto &entry : kept) {
+            all[entry.first] = std::move(entry.second);
+        }
+        savePass0(output, all);
+    }
+    return report;
 }
 
 } // namespace rfx

@@ -1071,6 +1071,25 @@ std::vector<Field> locateFields(TrackReader &reader, size_t track, double fs, Vi
     return fields;
 }
 
+std::optional<VideoSystem> systemOfStandard(const std::string &standard)
+{
+    if (standard == "pal" || standard == "secam") {
+        return VideoSystem::Pal;
+    }
+    if (standard == "ntsc" || standard == "pal-m" || standard == "ntsc-vhd") {
+        return VideoSystem::Ntsc;
+    }
+    return std::nullopt;
+}
+
+std::array<VideoSystem, 2> systemsToTry(const std::string &standard)
+{
+    if (systemOfStandard(standard) == VideoSystem::Pal) {
+        return {VideoSystem::Pal, VideoSystem::Ntsc};
+    }
+    return {VideoSystem::Ntsc, VideoSystem::Pal};
+}
+
 double nominalLineSamples(double fs, VideoSystem system)
 {
     return fs * (system == VideoSystem::Pal ? pal() : ntsc()).lineUs / 1e6;
@@ -1120,8 +1139,10 @@ size_t keepPass0(const QString &archive, double fallbackRateMhz, bool onlyMissin
         workers.emplace_back([&, k] {
             try {
                 const double rate = reader.meta().sources[k].rateHz > 0 ? reader.meta().sources[k].rateHz : fallbackRateMhz * 1e6;
-                for (const bool pal : {false, true}) {
-                    std::vector<Field> fields = locateFields(reader, k, rate, pal ? VideoSystem::Pal : VideoSystem::Ntsc, 0, stop, [&](double part) {
+                // (the standard said of the track tells which system to try first)
+                for (const VideoSystem system : systemsToTry(reader.meta().sources[k].standard)) {
+                    const bool pal = system == VideoSystem::Pal;
+                    std::vector<Field> fields = locateFields(reader, k, rate, system, 0, stop, [&](double part) {
                         const int now = std::clamp(static_cast<int>(part * 100.0), 0, 100);
                         std::lock_guard<std::mutex> lock(mutex);
                         if (now != percent[k]) {

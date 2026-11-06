@@ -79,7 +79,7 @@ public:
     const LagTable *lagTable(size_t k, size_t j) const;
     // What pass 0 found in track k, as the archive keeps it (null when it keeps none, and for what is not an archive).
     const SavedPass0 *pass0(size_t k) const;
-    // Whether the file can keep speed curves (a predictor archive).
+    // Whether the file can keep TBC curves (a predictor archive).
     bool keepsSpeed() const { return m_archive != nullptr; }
 
     // The `n` canonical samples of track `k` from sample `start` (zero outside the

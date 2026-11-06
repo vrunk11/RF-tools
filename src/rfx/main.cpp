@@ -17,6 +17,7 @@
 #include "packer.h"
 #include "rfsync.h"
 #include "trackreader.h"
+#include "verify.h"
 
 #include <QCommandLineOption>
 #include <QCommandLineParser>
@@ -26,6 +27,7 @@
 #include <QStringList>
 
 #include <algorithm>
+#include <atomic>
 #include <cstdio>
 #include <optional>
 
@@ -121,6 +123,60 @@ int runKeepPass0(const QStringList &args)
     const size_t done = rfx::keepPass0(parser.positionalArguments().first(), rate, !parser.isSet(all));
     std::fprintf(stderr, "TBC curve worked out and kept for %zu track(s)\n", done);
     return kExitOk;
+}
+
+int runCheck(const QStringList &args)
+{
+    QCommandLineParser parser;
+    parser.setApplicationDescription("Check the integrity of .rfx files: every track is decoded and what comes out is compared with the SHA-256 of the samples the file keeps (and each stored sidecar with its own). Nothing is written. The three variants of the file are checked. The exit status is 0 when every track that can be checked is intact, 1 when one is not.");
+    parser.addHelpOption();
+    const QCommandLineOption track("track", "Check only this track (0 is the primary) of the file; with several files, of each of them.", "track");
+    parser.addOption(track);
+    parser.addPositionalArgument("archive...", "The .rfx files.");
+    parser.process(args);
+    const QStringList files = parser.positionalArguments();
+    if (files.isEmpty()) {
+        return usageError("check wants at least one .rfx file");
+    }
+    std::optional<size_t> only;
+    if (parser.isSet(track)) {
+        bool ok = false;
+        const uint k = parser.value(track).toUInt(&ok);
+        if (!ok) {
+            return usageError(QStringLiteral("--track wants a number, not '%1'").arg(parser.value(track)));
+        }
+        only = k;
+    }
+    bool allIntact = true;
+    for (const QString &file : files) {
+        std::atomic<int> shown{-1};
+        const std::vector<rfx::TrackCheck> checks = rfx::verifyArchive(file, only, [&shown](double part) {
+            // (a line every ten per cent, on the error output, as the other commands tell how far they are)
+            const int tenth = static_cast<int>(part * 10.0) * 10;
+            if (tenth > shown.exchange(std::max(tenth, shown.load()))) {
+                std::fprintf(stderr, "check: %d%%\n", tenth);
+            }
+        });
+        std::fprintf(stdout, "%s\n", QDir::toNativeSeparators(file).toStdString().c_str());
+        size_t intact = 0;
+        size_t unchecked = 0;
+        size_t broken = 0;
+        for (const rfx::TrackCheck &c : checks) {
+            if (!c.checked) {
+                ++unchecked;
+                std::fprintf(stdout, "  track %zu %s: no checksum in the file, nothing to compare with\n", c.track, c.name.c_str());
+            } else if (c.ok) {
+                ++intact;
+                std::fprintf(stdout, "  track %zu %s: intact\n", c.track, c.name.c_str());
+            } else {
+                ++broken;
+                std::fprintf(stdout, "  track %zu %s: NOT intact (%s)\n", c.track, c.name.c_str(), c.detail.c_str());
+            }
+        }
+        std::fprintf(stdout, "  %zu intact, %zu not intact, %zu without a checksum\n", intact, broken, unchecked);
+        allIntact = allIntact && broken == 0;
+    }
+    return allIntact ? kExitOk : kExitFailed;
 }
 
 int runUnpack(const QStringList &args)
@@ -276,7 +332,7 @@ int runPack(const QStringList &args)
     const QCommandLineOption noVerify("no-verify", "Skip the check that each segment decodes back to itself.");
     const QCommandLineOption pass0("pass0", "Pass 0 dumps already made (pass0_<i>.txt, in the order of the inputs).", "dir");
     const QCommandLineOption ldDecode("ld-decode", "Use this ld-decode for the pass 0 (locating the lines of the captures) instead of doing it here, which gives the same positions.", "program", "ld-decode");
-    const QCommandLineOption palOption("pal", "The captures are of a PAL disc (NTSC when not given).");
+    const QCommandLineOption palOption("pal", "The captures are of a PAL disc (NTSC when not given; --standard pal or secam says it too).");
     const QCommandLineOption rateMhz("rate-mhz", "Capture sample rate in MHz, for pass 0 and when a capture has no .yaml.", "MHz", "75");
     const QCommandLineOption format("format", "Capture format: auto (from the extension), s16, r16, s8, r8, lds, or flac / ldf (decoded with ffmpeg to raw 16-bit samples first).", "format", "auto");
     const QCommandLineOption device("device", "Where the predictor runs: cpu or gpu (OpenCL, the same bits).", "device", "cpu");
@@ -286,7 +342,7 @@ int runPack(const QStringList &args)
     const QCommandLineOption threads("threads", "Threads coding segments (default: one per processor).", "n");
     DiscOptions disc;
     disc.addTo(parser);
-    const QCommandLineOption keepPass0(QStringList{"keep-tbc-curve", "keep-pass0"}, "Keep the TBC curve of every capture (worked out from its RF: the lines located, as in the pass 0 of ld-decode) in the file: the speed of the disc and the time base correction are then there for the programs that read it (rf-analyse, ld-decode), without working it out again.");
+    const QCommandLineOption keepPass0("keep-tbc-curve", "Keep the TBC curve of every capture (worked out from its RF: the lines located, as in the pass 0 of ld-decode) in the file: the speed of the disc and the time base correction are then there for the programs that read it (rf-analyse, ld-decode), without working it out again.");
     for (const QCommandLineOption *o : {&output, &level, &segment, &noVerify, &pass0, &ldDecode, &palOption, &rateMhz, &format, &device, &order, &flac, &rawOption, &threads, &keepPass0}) {
         parser.addOption(*o);
     }
@@ -380,11 +436,11 @@ struct WorkOptions
     QCommandLineOption noVerify{"no-verify", "Skip the check that each coded segment decodes back to itself."};
     QCommandLineOption pass0{"pass0", "Pass 0 dumps already made (pass0_<i>.txt, in the order of the tracks written).", "dir"};
     QCommandLineOption ldDecode{"ld-decode", "Use this ld-decode for the pass 0 (locating the lines of the captures) instead of doing it here, which gives the same positions.", "program", "ld-decode"};
-    QCommandLineOption palOption{"pal", "The captures are of a PAL disc (NTSC when not given)."};
+    QCommandLineOption palOption{"pal", "The captures are of a PAL disc (NTSC when not given; --standard pal or secam says it too)."};
     QCommandLineOption rateMhz{"rate-mhz", "Capture sample rate in MHz, for pass 0.", "MHz", "75"};
     QCommandLineOption device{"device", "Where the predictor runs: cpu or gpu (OpenCL, the same bits).", "device", "cpu"};
     QCommandLineOption threads{"threads", "Threads coding segments (default: one per processor).", "n"};
-    QCommandLineOption keepPass0{QStringList{"keep-tbc-curve", "keep-pass0"}, "Keep the TBC curve of every track (worked out from its RF) in the file: the ones the tracks kept from their files already have are carried over, the others are worked out."};
+    QCommandLineOption keepPass0{"keep-tbc-curve", "Keep the TBC curve of every track (worked out from its RF) in the file: the ones the tracks kept from their files already have are carried over, the others are worked out."};
 
     void addTo(QCommandLineParser &parser)
     {
@@ -446,6 +502,47 @@ bool trackList(const QCommandLineParser &parser, const QCommandLineOption &optio
     return true;
 }
 
+// An .rfx file that may carry the tracks asked for, "file.rfx:0,2" (no list: all of them). The list is taken only when what follows the last colon
+// is numbers, so that "C:\disc.rfx" is a path.
+struct ArchiveArg
+{
+    QString path;
+    std::vector<size_t> tracks;
+};
+
+ArchiveArg splitArchiveArg(const QString &arg)
+{
+    ArchiveArg out;
+    out.path = arg;
+    const qsizetype colon = arg.lastIndexOf(QLatin1Char(':'));
+    if (colon > 1) {
+        const QStringList parts = arg.mid(colon + 1).split(QLatin1Char(','));
+        std::vector<size_t> tracks;
+        bool all = !parts.isEmpty();
+        for (const QString &p : parts) {
+            bool ok = false;
+            const uint v = p.toUInt(&ok);
+            all = all && ok;
+            tracks.push_back(v);
+        }
+        if (all) {
+            out.path = arg.left(colon);
+            out.tracks = std::move(tracks);
+        }
+    }
+    return out;
+}
+
+// The picks of the tracks of one of the archives (all of them, or the ones named), for the archive number `arch`.
+std::vector<rfx::Pick> picksOfArchive(const ArchiveArg &a, size_t arch)
+{
+    std::vector<rfx::Pick> picks = a.tracks.empty() ? rfx::pickAll({a.path}) : rfx::pickSome(a.path, a.tracks);
+    for (rfx::Pick &p : picks) {
+        p.arch = arch;
+    }
+    return picks;
+}
+
 int runEdit(const QString &command, const QStringList &args)
 {
     QCommandLineParser parser;
@@ -461,9 +558,9 @@ int runEdit(const QString &command, const QStringList &args)
     disc.addTo(parser);
     const QCommandLineOption changed("track", "The tracks to say it of (0 is the primary), e.g. 1,3; all of them when not given.", "tracks");
     if (command == QLatin1String("merge")) {
-        parser.setApplicationDescription("Merge .rfx files into one (the tracks of each after the ones of the previous; no track is coded again unless --recode is given).");
+        parser.setApplicationDescription("Merge .rfx files into one (the tracks of each after the ones of the previous; no track is coded again unless --recode is given). Some tracks of a file only: file.rfx:0,2 (0 is the primary); without a list, all of them.");
         parser.addOption(recode);
-        parser.addPositionalArgument("archives", "The .rfx files to merge.", "<archive> <archive>...");
+        parser.addPositionalArgument("archives", "The .rfx files to merge, each with the tracks to take if not all: file.rfx:0,2.", "<archive>[:tracks] <archive>[:tracks]...");
     } else if (command == QLatin1String("extract")) {
         parser.setApplicationDescription("Write some of the tracks of a .rfx file as a .rfx file of their own.");
         parser.addOption(only);
@@ -477,7 +574,7 @@ int runEdit(const QString &command, const QStringList &args)
         parser.addOption(changed);
         parser.addPositionalArgument("archive", "The .rfx file.");
     } else {
-        parser.setApplicationDescription("Write a .rfx file with more tracks than another: captures, and the tracks of other .rfx files (copied as they are where they can be).");
+        parser.setApplicationDescription("Write a .rfx file with more tracks than another: captures, and the tracks of other .rfx files (copied as they are where they can be; some of them only: other.rfx:1,3).");
         parser.addPositionalArgument("archive", "The .rfx file.");
         parser.addPositionalArgument("captures", "Captures to add, in any format pack takes.", "<capture>...");
     }
@@ -508,8 +605,18 @@ int runEdit(const QString &command, const QStringList &args)
         if (positional.size() < 2) {
             return usageError("merge wants at least two .rfx files");
         }
-        std::vector<QString> archives(positional.begin(), positional.end());
-        std::vector<rfx::Pick> picks = rfx::pickAll(archives);
+        std::vector<QString> archives;
+        std::vector<rfx::Pick> picks;
+        for (const QString &arg : positional) {
+            const ArchiveArg a = splitArchiveArg(arg);
+            archives.push_back(a.path);
+            for (rfx::Pick &p : picksOfArchive(a, archives.size() - 1)) {
+                picks.push_back(std::move(p));
+            }
+        }
+        if (picks.empty()) {
+            return usageError("merge has no track to write");
+        }
         say(picks);
         rfx::assembleArchives(archives, picks, out, options, parser.isSet(recode) ? std::optional<size_t>(1) : std::nullopt);
     } else if (command == QLatin1String("extract") || command == QLatin1String("remove")) {
@@ -558,10 +665,10 @@ int runEdit(const QString &command, const QStringList &args)
         std::vector<QString> archives = {positional[0]};
         std::vector<rfx::Pick> picks = rfx::pickAll({positional[0]});
         for (int i = 1; i < positional.size(); ++i) {
-            if (positional[i].endsWith(QLatin1String(".rfx"), Qt::CaseInsensitive)) {
-                archives.push_back(positional[i]);
-                for (rfx::Pick p : rfx::pickAll({positional[i]})) {
-                    p.arch = archives.size() - 1;
+            const ArchiveArg a = splitArchiveArg(positional[i]);
+            if (a.path.endsWith(QLatin1String(".rfx"), Qt::CaseInsensitive)) {
+                archives.push_back(a.path);
+                for (rfx::Pick &p : picksOfArchive(a, archives.size() - 1)) {
                     picks.push_back(std::move(p));
                 }
             } else {
@@ -763,7 +870,8 @@ void printHelp()
         "  remove    Write a .rfx file without some of the tracks\n"
         "  add       Write a .rfx file with more captures or the tracks of other .rfx files\n"
         "  tag       Write a .rfx file with the standard, reference, copy, capture number, face or signal of some tracks said or changed\n"
-        "  tbc-curve Work out the TBC curve of the tracks from their RF and keep it in the file (the speed, the time base correction; also keep-pass0)\n"
+        "  tbc-curve Work out the TBC curve of the tracks from their RF and keep it in the file (the speed, the time base correction)\n"
+        "  check     Check the integrity of .rfx files: every track against its SHA-256 (nothing is written)\n"
         "  info      Show what an .rfx file holds (--yaml: the whole metadata)\n"
         "  unpack    Rebuild the original files, checked by SHA-256 (--meta: metadata only)\n"
         "\n"
@@ -821,8 +929,11 @@ int main(int argc, char *argv[])
         if (command == QLatin1String("pass0")) {
             return runPass0Command(rest);
         }
-        if (command == QLatin1String("tbc-curve") || command == QLatin1String("keep-pass0")) {
+        if (command == QLatin1String("tbc-curve")) {
             return runKeepPass0(rest);
+        }
+        if (command == QLatin1String("check")) {
+            return runCheck(rest);
         }
         if (command == QLatin1String("info")) {
             return runInfo(rest);
@@ -837,5 +948,5 @@ int main(int argc, char *argv[])
         std::fprintf(stderr, "rfx: %s\n", e.what());
         return kExitFailed;
     }
-    return usageError(QStringLiteral("unknown command '%1' (pack, merge, extract, remove, add, tag, tbc-curve, info, unpack, noise, refsel, bench, gpu-check)").arg(command));
+    return usageError(QStringLiteral("unknown command '%1' (pack, merge, extract, remove, add, tag, tbc-curve, check, info, unpack, noise, refsel, bench, gpu-check)").arg(command));
 }

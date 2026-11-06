@@ -49,7 +49,7 @@ public:
     // Give the captures of the opened file back, in a folder (asked unless `folder` is given): the track `only` (its number in the file), or all.
     bool unpack(std::optional<size_t> only, const QString &folder = QString());
     bool unpackIn(size_t arch, std::optional<size_t> only, const QString &folder = QString());
-    // Locate the lines of the tracks of the opened file from their RF and keep them in it (the pass 0 curve), asking first.
+    // Locate the lines of the tracks of the opened file from their RF and keep them in it (the TBC curve), asking first.
     bool computePass0(bool ask = true, std::optional<size_t> only = std::nullopt);
     bool computePass0In(size_t arch, bool ask, std::optional<size_t> only);
     // Check the tracks of the opened file (only: the track of the file with that number) against the checksums it keeps, by decoding them. Says what it
