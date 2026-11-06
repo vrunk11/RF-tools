@@ -27,15 +27,19 @@ class TrackEditDialog : public QDialog
     Q_OBJECT
 
 public:
-    // `meta`: the track as it is in its file.
-    TrackEditDialog(const rfx::SourceMeta &meta, QWidget *parent = nullptr);
+    // `meta`: the track as it is in its file; `medium`: what was captured, said of the whole file.
+    TrackEditDialog(const rfx::SourceMeta &meta, const std::string &medium, QWidget *parent = nullptr);
 
     // What the person changed, and only that.
     rfx::TrackEdit edit() const;
+    // What was captured, of the whole file, when the person changed it.
+    std::optional<std::string> medium() const;
     bool changed() const;
 
 private:
     rfx::SourceMeta m_meta;
+    std::string m_medium;
+    QComboBox *m_source = nullptr;
     QLineEdit *m_name = nullptr;
     QPlainTextEdit *m_notes = nullptr;
     QComboBox *m_standard = nullptr;

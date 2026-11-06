@@ -47,6 +47,8 @@ private:
         int key = 0;
         QComboBox *choice = nullptr;
         QWidget *widget = nullptr;
+        // The line between this track and the one before it (none for the first).
+        QWidget *separator = nullptr;
         bool removed = false;
     };
     QList<Row> m_rows;

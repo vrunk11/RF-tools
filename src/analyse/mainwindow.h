@@ -15,9 +15,11 @@
 #include "session.h"
 
 #include <QMainWindow>
+#include <QSet>
 
 #include <functional>
 #include <map>
+#include <optional>
 
 #include <memory>
 #include <vector>
@@ -103,11 +105,17 @@ public:
     bool verifyTracks(std::optional<int> track, bool quiet = false);
     // Write what `edit` changes of track `k` in its .rfx file: the file is written again aside (the samples are copied as they are, nothing is coded
     // again) and takes its place, and the files are opened again as they were. False, with the reason said unless `quiet`, when it could not be.
-    bool rewriteTrack(int k, const rfx::TrackEdit &edit, bool quiet = false);
-    // The same for several tracks of one file (edits by their number in it); select is the track selected when the file is open again.
-    bool rewriteFile(const QString &path, const std::map<size_t, rfx::TrackEdit> &edits, int select, bool quiet = false);
+    bool rewriteTrack(int k, const rfx::TrackEdit &edit, bool quiet = false, std::optional<std::string> medium = std::nullopt);
+    // The same for several tracks of one file (edits by their number in it). The file is written beside itself and put in its place without closing anything: what is shown stays as it is.
+    bool rewriteFile(const QString &path, const std::map<size_t, rfx::TrackEdit> &edits, bool quiet = false, std::optional<std::string> medium = std::nullopt);
+    // Whether the work of the TBC curve is to be done for the track: for a LaserDisc; for a source that is not said, asked (Yes is how it is read while
+    // the file is open: nothing is written in it); for another source, no (and why). The session asks it before starting that work.
+    bool treatAsLaserdisc(int k);
+    // Treat the captures whose source is not said as LaserDisc captures without asking (the command line option --ld; the tests).
+    void setAssumeLaserdisc(bool on) { m_assumeLaserdisc = on; }
     // The tracks whose standard is not the one of their lines (a TBC curve was just worked out): listed, to be changed if the person wants.
     void fixStandards();
+
     void setRfSpeedAll() {
         for (int k = 0; k < m_session->trackCount(); ++k) {
             m_session->setRfSpeed(k, true);
@@ -137,6 +145,10 @@ private:
     QPushButton *m_verifyTrack = nullptr;
     QPushButton *m_computeTrack = nullptr;
     QPushButton *m_editTrack = nullptr;
+    bool m_askingStandards = false;
+    bool m_assumeLaserdisc = false;
+    QSet<QString> m_assumedLaserdisc;
+    QSet<QString> m_declinedLaserdisc;
     void closeFile();
     // The name, the note and what is said of the disc and the signal, for the selected track: asked in a window, then written to its .rfx file.
     void editTrack();

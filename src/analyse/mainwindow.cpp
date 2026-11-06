@@ -536,6 +536,7 @@ MainWindow::MainWindow() : m_session(new Session(this))
     connect(m_session, &Session::rfSpeedChanged, this, showSpeedProgress);
     // (queued: the box is asked once the work that made it is over)
     connect(m_session, &Session::standardsDoubtful, this, &MainWindow::fixStandards, Qt::QueuedConnection);
+
     connect(m_session, &Session::rfSpeedProgress, this, showSpeedProgress);
     m_statusSpeed->hide();
     for (auto signal : {&Session::opened, &Session::closed, &Session::changed, &Session::rfSpeedChanged}) {
@@ -600,7 +601,10 @@ MainWindow::MainWindow() : m_session(new Session(this))
         updateStatus();
         buildLanes();
     });
+    m_session->setLaserdiscGate([this](int k) { return treatAsLaserdisc(k); });
     connect(m_session, &Session::closed, this, [this] {
+        m_assumedLaserdisc.clear();
+        m_declinedLaserdisc.clear();
         m_openSources.clear();
         m_pages->setCurrentIndex(0);
         m_exportAction->setEnabled(false);
@@ -1831,22 +1835,22 @@ void MainWindow::editTrack()
         QMessageBox::information(this, tr("Edit"), tr("A capture on its own keeps no metadata: nothing can be said of it. Pack it in an .rfx file (rf-packer) first."));
         return;
     }
-    TrackEditDialog dialog(m_session->track(k), this);
+    TrackEditDialog dialog(m_session->track(k), m_session->mediumOf(k), this);
     if (dialog.exec() != QDialog::Accepted || !dialog.changed()) {
         return;
     }
-    rewriteTrack(k, dialog.edit());
+    rewriteTrack(k, dialog.edit(), false, dialog.medium());
 }
 
-bool MainWindow::rewriteTrack(int k, const rfx::TrackEdit &edit, bool quiet)
+bool MainWindow::rewriteTrack(int k, const rfx::TrackEdit &edit, bool quiet, std::optional<std::string> medium)
 {
     if (!m_session->isOpen() || k < 0 || k >= m_session->trackCount() || !m_session->inArchive(k)) {
         return false;
     }
-    return rewriteFile(m_session->sourcePath(k), {{m_session->localTrack(k), edit}}, k, quiet);
+    return rewriteFile(m_session->sourcePath(k), {{m_session->localTrack(k), edit}}, quiet, medium);
 }
 
-bool MainWindow::rewriteFile(const QString &path, const std::map<size_t, rfx::TrackEdit> &edits, int select, bool quiet)
+bool MainWindow::rewriteFile(const QString &path, const std::map<size_t, rfx::TrackEdit> &edits, bool quiet, std::optional<std::string> medium)
 {
     if (!m_session->isOpen()) {
         return false;
@@ -1856,18 +1860,16 @@ bool MainWindow::rewriteFile(const QString &path, const std::map<size_t, rfx::Tr
             QMessageBox::warning(this, tr("Edit"), text);
         }
     };
-    // What is worked out and not in the file would be lost when it is read again: asked first.
-    if (!confirmCurves()) {
+    // (what is worked out and not in the file stays as it is in the window: the file is replaced without being closed)
+    if (m_session->rfSpeedBusy()) {
+        say(tr("A TBC curve is being worked out: wait for it to be done."));
         return false;
     }
-    const std::vector<Session::Source> sources = m_openSources;
-    // The files are let go (this one is replaced), and opened again after.
-    m_session->close();
     const QFileInfo info(path);
     const QString aside = info.dir().filePath(info.completeBaseName() + QStringLiteral(".edit.rfx"));
     auto done = std::make_shared<std::atomic<bool>>(false);
     auto error = std::make_shared<QString>();
-    std::thread worker([path, aside, edits, done, error] {
+    std::thread worker([path, aside, edits, medium, done, error] {
         try {
             std::vector<rfx::Pick> picks = rfx::pickAll({path});
             for (const auto &change : edits) {
@@ -1878,6 +1880,7 @@ bool MainWindow::rewriteFile(const QString &path, const std::map<size_t, rfx::Tr
             }
             rfx::PackOptions options;
             options.order = rfx::OrderMode::Given;
+            options.medium = medium;
             rfx::assembleArchives({path}, picks, aside, options, std::nullopt);
         } catch (const std::exception &e) {
             *error = QString::fromUtf8(e.what());
@@ -1897,23 +1900,13 @@ bool MainWindow::rewriteFile(const QString &path, const std::map<size_t, rfx::Tr
         worker.join();
     }
     QString failure = *error;
-    if (failure.isEmpty() && QFile::exists(path) && !QFile::remove(path)) {
-        failure = tr("%1 cannot be replaced: is it open in another program?").arg(QDir::toNativeSeparators(path));
-    }
-    if (failure.isEmpty() && !QFile::rename(aside, path)) {
-        failure = tr("%1 cannot be put in place of the file").arg(QDir::toNativeSeparators(aside));
-    }
     if (!failure.isEmpty()) {
         QFile::remove(aside);
-    }
-    // (the files are opened again, as they were, with the track that was selected)
-    QString reopen;
-    if (!m_session->open(sources, &reopen)) {
-        say(failure.isEmpty() ? reopen : failure + QLatin1Char('\n') + reopen);
+        say(failure);
         return false;
     }
-    m_session->setSelected(select);
-    if (!failure.isEmpty()) {
+    // The file is put in place of the old one and read again, without anything being closed: the display stays as it was.
+    if (!m_session->replaceFile(path, aside, &failure)) {
         say(failure);
         return false;
     }
@@ -1949,40 +1942,89 @@ bool MainWindow::confirmCurves()
     }
 }
 
-void MainWindow::fixStandards()
+bool MainWindow::treatAsLaserdisc(int k)
 {
-    QList<StandardDoubt> list;
-    for (const auto &doubt : m_session->takeStandardDoubts()) {
-        if (!m_session->isOpen() || doubt.first >= m_session->trackCount() || !m_session->inArchive(doubt.first)) {
-            continue;
-        }
-        const rfx::SourceMeta &sm = m_session->track(doubt.first);
-        list.push_back(StandardDoubt{QString::fromStdString(sm.name), doubt.first, QString::fromStdString(sm.standard), doubt.second});
+    if (!m_session->isOpen() || k < 0 || k >= m_session->trackCount()) {
+        return false;
     }
-    if (list.isEmpty()) {
-        return;
+    const QString path = m_session->sourcePath(k);
+    const std::string medium = m_session->mediumOf(k);
+    if (medium == "ld" || m_assumedLaserdisc.contains(path)) {
+        return true;
     }
-    StandardDialog dialog(list, this);
-    if (dialog.exec() != QDialog::Accepted) {
-        return;
+    if (medium.empty() && m_assumeLaserdisc) {
+        return true;
     }
-    std::map<QString, std::map<size_t, rfx::TrackEdit>> byFile;
-    for (const auto &change : dialog.accepted()) {
-        rfx::TrackEdit e;
-        e.info.standard = change.second.toStdString();
-        byFile[m_session->sourcePath(change.first)][m_session->localTrack(change.first)] = e;
+    if (m_declinedLaserdisc.contains(path)) {
+        return false;
     }
-    // The curves that were just worked out are kept in their files first: writing a file again would lose them.
-    QString error;
-    m_session->saveSpeedCurves(&error);
-    const int selected = m_session->selected();
-    for (const auto &file : byFile) {
-        if (!rewriteFile(file.first, file.second, selected)) {
-            break;
-        }
+    if (!medium.empty()) {
+        QMessageBox::information(this, tr("TBC curve"), tr("The source of %1 is %2: the TBC curve (and the alignment, the stack and the speed from the RF, which are made from it) are for LaserDisc captures.")
+                                                              .arg(QFileInfo(path).fileName(), QString::fromStdString(rfx::mediumName(medium))));
+        m_declinedLaserdisc.insert(path);
+        return false;
     }
+    // (Yes is how the capture is read for this work, as long as the file is open: nothing is said in the file)
+    const auto answer = QMessageBox::question(this, tr("TBC curve"),
+                                              tr("The source of %1 is not said. The TBC curve is worked out for LaserDisc captures: treat it as a LaserDisc?").arg(QFileInfo(path).fileName()),
+                                              QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+    if (answer != QMessageBox::Yes) {
+        m_declinedLaserdisc.insert(path);
+        return false;
+    }
+    m_assumedLaserdisc.insert(path);
+    return true;
 }
 
+void MainWindow::fixStandards()
+{
+    if (m_askingStandards) {
+        return;   // (a box is open: it takes what comes meanwhile when it is closed)
+    }
+    m_askingStandards = true;
+    // The work of the curves waits for what is answered here.
+    bool restarted = false;
+    for (;;) {
+        QList<StandardDoubt> list;
+        for (const auto &doubt : m_session->takeStandardDoubts()) {
+            if (!m_session->isOpen() || doubt.first >= m_session->trackCount() || !m_session->inArchive(doubt.first)) {
+                continue;
+            }
+            const rfx::SourceMeta &sm = m_session->track(doubt.first);
+            list.push_back(StandardDoubt{QString::fromStdString(sm.name), doubt.first, QString::fromStdString(sm.standard), doubt.second});
+        }
+        if (list.isEmpty()) {
+            break;
+        }
+        StandardDialog dialog(list, this);
+        if (dialog.exec() != QDialog::Accepted || dialog.accepted().isEmpty()) {
+            continue;
+        }
+        std::map<QString, std::map<size_t, rfx::TrackEdit>> byFile;
+        for (const auto &change : dialog.accepted()) {
+            rfx::TrackEdit e;
+            e.info.standard = change.second.toStdString();
+            byFile[m_session->sourcePath(change.first)][m_session->localTrack(change.first)] = e;
+        }
+        // The work that started is stopped (it has only looked at the start of the tracks), the files are written with the standards chosen (the
+        // curves worked out stay as they are: keeping them is for the person to say), and the work starts again.
+        const std::vector<int> unfinished = m_session->abortCurves();
+        for (const auto &file : byFile) {
+            if (!rewriteFile(file.first, file.second)) {
+                break;
+            }
+        }
+        for (const int k : unfinished) {
+            m_session->computeCurve(k);
+        }
+        restarted = true;
+        break;
+    }
+    m_askingStandards = false;
+    if (!restarted) {
+        m_session->resumeCurves();
+    }
+}
 void MainWindow::closeEvent(QCloseEvent *event)
 {
     if (confirmCurves()) {

@@ -21,7 +21,7 @@
 #include <QSpinBox>
 #include <QVBoxLayout>
 
-TrackEditDialog::TrackEditDialog(const rfx::SourceMeta &meta, QWidget *parent) : QDialog(parent), m_meta(meta)
+TrackEditDialog::TrackEditDialog(const rfx::SourceMeta &meta, const std::string &medium, QWidget *parent) : QDialog(parent), m_meta(meta), m_medium(medium)
 {
     setWindowTitle(tr("Edit %1").arg(QString::fromStdString(meta.name)));
     setObjectName(QStringLiteral("trackEditDialog"));
@@ -32,6 +32,16 @@ TrackEditDialog::TrackEditDialog(const rfx::SourceMeta &meta, QWidget *parent) :
     m_name = new QLineEdit(QString::fromStdString(meta.name), this);
     m_name->setObjectName(QStringLiteral("editName"));
     form->addRow(tr("Name"), m_name);
+
+    m_source = new QComboBox(this);
+    m_source->setObjectName(QStringLiteral("editSource"));
+    m_source->addItem(tr("unknown"), QString());
+    for (const char *s : {"ld", "vhs", "vhd", "cvbs"}) {
+        m_source->addItem(QString::fromStdString(rfx::mediumName(s)), QString::fromLatin1(s));
+    }
+    m_source->setCurrentIndex(std::max(0, m_source->findData(QString::fromStdString(medium))));
+    m_source->setToolTip(tr("What was captured, for the whole file (every track of it). The TBC curve is worked out for LaserDisc captures (LD)."));
+    form->addRow(tr("Source (whole file)"), m_source);
 
     m_standard = new QComboBox(this);
     m_standard->setObjectName(QStringLiteral("editStandard"));
@@ -148,8 +158,17 @@ rfx::TrackEdit TrackEditDialog::edit() const
     return e;
 }
 
+std::optional<std::string> TrackEditDialog::medium() const
+{
+    const std::string chosen = m_source->currentData().toString().toStdString();
+    if (chosen == m_medium) {
+        return std::nullopt;
+    }
+    return chosen;
+}
+
 bool TrackEditDialog::changed() const
 {
     const rfx::TrackEdit e = edit();
-    return e.name || e.notes || e.info.any();
+    return e.name || e.notes || e.info.any() || medium();
 }

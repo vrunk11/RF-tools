@@ -15,12 +15,16 @@
 #include "error.h"
 #include "rfsync.h"
 
+#include <QDir>
+#include <QFile>
 #include <QFileInfo>
 #include <QMetaObject>
 #include <QRunnable>
 #include <QThread>
 
 #include <algorithm>
+#include <array>
+#include <map>
 #include <cmath>
 #include <mutex>
 #include <thread>
@@ -971,7 +975,7 @@ bool Session::rfSpeed(int k) const
 
 void Session::computeCurve(int k)
 {
-    if (k >= 0 && k < trackCount() && !curveReady(k)) {
+    if (k >= 0 && k < trackCount() && !curveReady(k) && allowed(k)) {
         startRfSpeed(k);
         emit rfSpeedProgress();   // (the list of tracks shows that it waits)
     }
@@ -980,6 +984,10 @@ void Session::computeCurve(int k)
 void Session::setRfSpeed(int k, bool on)
 {
     if (k < 0 || k >= trackCount() || on == rfSpeed(k)) {
+        return;
+    }
+    if (on && !allowed(k)) {
+        emit rfSpeedChanged();   // (the boxes go back to what is)
         return;
     }
     m_rfOn.resize(m_tracks.size(), false);
@@ -1150,12 +1158,16 @@ void Session::setAligned(int k, bool on)
     if (k < 0 || k >= trackCount() || on == aligned(k)) {
         return;
     }
+    if (on && !allowed(k)) {
+        emit rfSpeedChanged();
+        return;
+    }
     m_aligned.resize(m_tracks.size(), false);
     m_aligned[static_cast<size_t>(k)] = on;
     m_alignPlaced = false;
     if (on) {
         setRfSpeed(k, true);
-        if (k != 0) {
+        if (k != 0 && allowed(0)) {
             startRfSpeed(0);   // (the first track gives the axis the others are lined up on)
         }
     }
@@ -1249,8 +1261,58 @@ void Session::startRfSpeed(int only)
     // would decode them all again), and the processors are shared between them.
     m_speedPool.setMaxThreadCount(8);
     m_speedPool.start(QRunnable::create([this, jobs, id]() {
+        // A quick look first, at the start of each track: which system its lines are of. When the standard said for a track seems wrong, the
+        // work waits (with the others that started with it) for the person to answer, and then goes on with the right system.
+        const auto stale = [this, id] { return m_openId.load() != id || m_speedStop.load(); };
+        std::map<int, rfx::VideoSystem> firstTry;
+        ++m_detecting;
+        bool asks = false;
+        {
+            std::vector<std::pair<int, QString>> doubts;
+            for (const Job &job : jobs) {
+                if (stale()) {
+                    break;
+                }
+                try {
+                    const std::string &said = job.reader->meta().sources[job.local].standard;
+                    if (const auto system = rfx::detectSystem(*job.reader, job.local, job.rate, said, &m_speedStop)) {
+                        firstTry[job.track] = *system;
+                        if (const auto suggestion = rfx::doubtedStandard(said, *system == rfx::VideoSystem::Pal)) {
+                            doubts.push_back({job.track, QString::fromStdString(*suggestion)});
+                        }
+                    }
+                } catch (const std::exception &) {
+                    // (the work itself says what is wrong with the track)
+                }
+            }
+            std::lock_guard<std::mutex> lock(m_doubtMutex);
+            m_standardDoubts.insert(m_standardDoubts.end(), doubts.begin(), doubts.end());
+            // The last one to have looked asks, if anything seems wrong; the others wait for it.
+            if (--m_detecting == 0 && !m_standardDoubts.empty() && !stale()) {
+                m_asking = true;
+                asks = true;
+            }
+        }
+        if (asks) {
+            QMetaObject::invokeMethod(this, [this, id] {
+                if (m_openId.load() == id) {
+                    emit standardsDoubtful();
+                }
+            }, Qt::QueuedConnection);
+        }
+        for (;;) {
+            {
+                std::lock_guard<std::mutex> lock(m_doubtMutex);
+                if (m_detecting.load() == 0 && !m_asking) {
+                    break;
+                }
+            }
+            if (stale()) {
+                break;
+            }
+            QThread::msleep(25);
+        }
         for (const Job &job : jobs) {
-            const auto stale = [this, id] { return m_openId.load() != id || m_speedStop.load(); };
             std::shared_ptr<SpeedCurve> curve;
             std::shared_ptr<const RfData> data;
             if (!stale()) {
@@ -1258,7 +1320,11 @@ void Session::startRfSpeed(int only)
                     // The system the standard of the track says first (NTSC when it says nothing); a PAL capture gives no field as NTSC.
                     m_rfPct[static_cast<size_t>(job.track)] = 0;
                     QMetaObject::invokeMethod(this, [this] { emit rfSpeedProgress(); }, Qt::QueuedConnection);
-                    for (const rfx::VideoSystem system : rfx::systemsToTry(job.reader->meta().sources[job.local].standard)) {
+                    std::array<rfx::VideoSystem, 2> order = rfx::systemsToTry(job.reader->meta().sources[job.local].standard);
+                    if (const auto seen = firstTry.find(job.track); seen != firstTry.end() && order[0] != seen->second) {
+                        std::swap(order[0], order[1]);
+                    }
+                    for (const rfx::VideoSystem system : order) {
                         const std::vector<rfx::Field> fields = rfx::locateFields(*job.reader, job.local, job.rate, system, 0, &m_speedStop, [this, job](double done) {
                             const int percent = std::clamp(static_cast<int>(done * 100.0), 0, 100);
                             if (percent != m_rfPct[static_cast<size_t>(job.track)].exchange(percent)) {
@@ -1295,17 +1361,9 @@ void Session::startRfSpeed(int only)
             }
             m_rfPct[static_cast<size_t>(job.track)] = -1;
             --m_rfBusy;
-            QMetaObject::invokeMethod(this, [this, id, data, job] {
+            QMetaObject::invokeMethod(this, [this, id] {
                 if (m_openId.load() == id) {
-                    if (data && job.track >= 0 && job.track < trackCount()) {
-                        if (const auto suggestion = rfx::doubtedStandard(track(job.track).standard, data->pal)) {
-                            m_standardDoubts.push_back({job.track, QString::fromStdString(*suggestion)});
-                        }
-                    }
                     emit rfSpeedChanged();
-                    if (m_rfBusy.load() == 0 && !m_standardDoubts.empty()) {
-                        emit standardsDoubtful();
-                    }
                     if (std::any_of(m_aligned.begin(), m_aligned.end(), [](bool on) { return on; })) {
                         placeAligned();
                         refresh();   // (the waveform now has its curve to be aligned by)
@@ -1316,11 +1374,132 @@ void Session::startRfSpeed(int only)
     }));
 }
 
+bool Session::replaceFile(const QString &path, const QString &replacement, QString *error)
+{
+    std::vector<size_t> mine;
+    for (size_t i = 0; i < m_sources.size(); ++i) {
+        if (m_sources[i].reader && m_sources[i].shownAs == path) {
+            mine.push_back(i);
+        }
+    }
+    const auto fail = [&](const QString &text) {
+        QFile::remove(replacement);
+        if (error) {
+            *error = text;
+        }
+        return false;
+    };
+    if (mine.empty()) {
+        return fail(tr("%1 is not open").arg(QDir::toNativeSeparators(path)));
+    }
+    if (m_rfBusy.load() > 0) {
+        return fail(tr("A TBC curve is being worked out: wait for it to be done."));
+    }
+    // What reads the files is stopped and waited for, then the file is let go.
+    ++m_openId;
+    m_speedStop = true;
+    m_speedPool.waitForDone();
+    m_pool.waitForDone();
+    m_overviewPool.waitForDone();
+    for (const size_t i : mine) {
+        m_sources[i].reader.reset();
+    }
+    QString failure;
+    if (QFile::exists(path) && !QFile::remove(path)) {
+        failure = tr("%1 cannot be replaced: is it open in another program?").arg(QDir::toNativeSeparators(path));
+    } else if (!QFile::rename(replacement, path)) {
+        failure = tr("%1 cannot be put in place of the file").arg(QDir::toNativeSeparators(replacement));
+    }
+    if (!failure.isEmpty()) {
+        QFile::remove(replacement);
+    }
+    bool readable = true;
+    for (const size_t i : mine) {
+        try {
+            m_sources[i].reader = std::make_unique<rfx::TrackReader>(path);
+        } catch (const std::exception &e) {
+            readable = false;
+            failure += (failure.isEmpty() ? QString() : QStringLiteral("\n")) + QString::fromUtf8(e.what());
+        }
+    }
+    if (!readable) {
+        m_speedStop = false;
+        // (nothing is left to show of a file that cannot be read)
+        for (const size_t i : mine) {
+            m_sources[i].reader.reset();
+        }
+        m_sources.clear();
+        close();
+        if (error) {
+            *error = failure;
+        }
+        return false;
+    }
+    m_speedStop = false;
+    ++m_generation;
+    startOverview();
+    refresh();
+    emit tracksChanged();
+    emit changed();
+    if (!failure.isEmpty()) {
+        if (error) {
+            *error = failure;
+        }
+        return false;
+    }
+    return true;
+}
+
+std::string Session::mediumOf(int k) const
+{
+    if (k < 0 || k >= trackCount()) {
+        return std::string();
+    }
+    return m_sources[static_cast<size_t>(m_tracks[static_cast<size_t>(k)].source)].reader->meta().medium;
+}
+
 std::vector<std::pair<int, QString>> Session::takeStandardDoubts()
 {
+    std::lock_guard<std::mutex> lock(m_doubtMutex);
     std::vector<std::pair<int, QString>> out;
     out.swap(m_standardDoubts);
     return out;
+}
+
+void Session::resumeCurves()
+{
+    std::lock_guard<std::mutex> lock(m_doubtMutex);
+    m_asking = false;
+}
+
+std::vector<int> Session::abortCurves()
+{
+    m_speedStop = true;
+    m_speedPool.waitForDone();
+    m_speedStop = false;
+    std::vector<int> unfinished;
+    {
+        std::lock_guard<std::mutex> lock(m_overviewMutex);
+        for (size_t k = 0; k < m_rfStarted.size() && k < m_rfCurves.size(); ++k) {
+            if (m_rfStarted[k] && !m_rfCurves[k]) {
+                m_rfStarted[k] = false;
+                unfinished.push_back(static_cast<int>(k));
+            }
+            if (m_rfPct && k < m_rfPctCount) {
+                m_rfPct[k] = -1;
+            }
+        }
+    }
+    m_rfBusy = 0;
+    m_detecting = 0;
+    {
+        std::lock_guard<std::mutex> lock(m_doubtMutex);
+        m_asking = false;
+        m_standardDoubts.clear();
+    }
+    emit rfSpeedChanged();
+    emit rfSpeedProgress();
+    return unfinished;
 }
 
 double Session::rfSpeedAt(int k, qint64 sample) const

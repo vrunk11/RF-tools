@@ -134,6 +134,7 @@ TrackList::TrackList(Session *session, QWidget *parent) : QListWidget(parent), m
     setFrameShape(QFrame::StyledPanel);
     setFrameShadow(QFrame::Sunken);
     connect(session, &Session::opened, this, &TrackList::rebuild);
+    connect(session, &Session::tracksChanged, this, &TrackList::rebuild);
     connect(session, &Session::closed, this, &TrackList::rebuild);
     connect(session, &Session::changed, this, &TrackList::refreshChecks);
     connect(session, &Session::rfSpeedChanged, this, &TrackList::refreshProgress);

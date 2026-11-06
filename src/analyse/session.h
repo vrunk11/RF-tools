@@ -23,6 +23,7 @@
 #include <QTimer>
 
 #include <atomic>
+#include <functional>
 #include <memory>
 #include <mutex>
 #include <vector>
@@ -173,6 +174,21 @@ public:
     // The tracks whose standard does not agree with the lines found in them, with the standard to suggest ("pal" or "ntsc"): what was found
     // since the last call, which forgets it.
     std::vector<std::pair<int, QString>> takeStandardDoubts();
+    // What was captured, of the file of the track (rfx::kMedia; empty when not said or for a capture on its own).
+    std::string mediumOf(int k) const;
+    // Asked before the work of a TBC curve (and what is made from it) is started for a track: when it answers false the work is not done. The window
+    // asks whether to treat the capture as a LaserDisc, as that work is for LaserDisc captures.
+    void setLaserdiscGate(std::function<bool(int)> gate) { m_gate = std::move(gate); }
+    // The work of the TBC curves waits, after its quick look, for the answer to the question those doubts make (standardsDoubtful): resumeCurves is the
+    // answer when nothing is changed. abortCurves is the answer when the files are to be written: the work that started is stopped (it only looked
+    // yet) and the tracks that were not finished are returned, to be asked for again (computeCurve) once the files are written.
+    void resumeCurves();
+    std::vector<int> abortCurves();
+    // Put `replacement` (a file written beside the .rfx file `path`, with other metadata) in place of it, without closing anything: the work that reads
+    // the file is stopped, the file is let go, replaced and read again, and what is shown (the window, the cursor, the tracks shown, the curves) stays
+    // as it is. The samples must be the same. False, with `error`, when it cannot (`replacement` is then removed); when the file cannot be read again
+    // the session is closed.
+    bool replaceFile(const QString &path, const QString &replacement, QString *error);
     bool rfSpeed() const { return rfSpeed(m_selected); }
     void setRfSpeed(bool on) { setRfSpeed(m_selected, on); }
     // Whether some track's speed is still being worked out.
@@ -247,8 +263,10 @@ signals:
     // The speed from the RF was switched, or one more track of it is made.
     void rfSpeedChanged();
     void rfSpeedProgress();
-    // Once every TBC curve that was asked for is worked out: some tracks have a standard that is not the one of their lines (takeStandardDoubts).
+    // The quick look at the start of the work of the TBC curves found tracks whose standard is not the one of their lines (takeStandardDoubts).
     void standardsDoubtful();
+    // The metadata of the tracks (their names too) changed; the files are the same.
+    void tracksChanged();
 
 private:
     void refresh();
@@ -316,6 +334,12 @@ private:
     };
     std::vector<std::shared_ptr<const RfData>> m_rfData;
     std::vector<std::pair<int, QString>> m_standardDoubts;
+    // (what the quick look found, guarded by m_doubtMutex with the two below: tracks that have not looked yet, and the question is open)
+    mutable std::mutex m_doubtMutex;
+    std::function<bool(int)> m_gate;
+    bool allowed(int k) const { return !m_gate || m_gate(k); }
+    std::atomic<int> m_detecting{0};
+    bool m_asking = false;
     std::vector<std::shared_ptr<const TimeBase>> m_timebases;
     std::shared_ptr<const TimeBase> timebaseOf(int k);
     std::vector<bool> m_rfStarted;

@@ -72,6 +72,7 @@ int main(int argc, char *argv[])
     parser.addOption(QCommandLineOption(QStringLiteral("align"), QStringLiteral("Start with the time base of every track corrected (Align capture): the speed is worked out from the RF first.")));
     parser.addOption(QCommandLineOption(QStringLiteral("rf-speed-all"), QStringLiteral("Start with the speed measured from the RF for every track (they are worked on together).")));
     parser.addOption(QCommandLineOption(QStringLiteral("rf-speed"), QStringLiteral("Start with the speed deviation measured from the RF (the From RF box).")));
+    parser.addOption(QCommandLineOption(QStringLiteral("ld"), QStringLiteral("Treat the captures whose source is not said as LaserDisc captures, without asking (the TBC curve, the alignment and the stack are for LaserDisc captures).")));
     parser.addOption(QCommandLineOption(QStringLiteral("force-dark-theme"), QStringLiteral("Force the dark theme, whatever the system and the setting say.")));
     parser.addPositionalArgument(QStringLiteral("file"), QStringLiteral("The .rfx files and the captures (.s16 .r16 .s8 .r8 .lds .flac .ldf) to open."),
                                  QStringLiteral("[file...]"));
@@ -80,8 +81,8 @@ int main(int argc, char *argv[])
     app.setProperty("forceDarkTheme", parser.isSet(QStringLiteral("force-dark-theme")));
 
     const QStringList args = parser.positionalArguments();
-
     MainWindow window;
+    window.setAssumeLaserdisc(parser.isSet(QStringLiteral("ld")));
     if (parser.isSet(size)) {
         const QStringList parts = parser.value(size).split(QLatin1Char('x'));
         bool okW = false;

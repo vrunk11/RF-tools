@@ -197,6 +197,7 @@ void MetadataPanel::rebuild()
           {tr("Capture no."), sm.capture > 0 ? QString::number(sm.capture) : tr("not said")},
           {tr("Face"), sm.face.empty() ? tr("not said") : QString::fromStdString(sm.face)},
           {tr("Signal"), sm.signal.empty() ? tr("not said") : (sm.signal == "yc" ? QStringLiteral("Y/C") : QStringLiteral("CVBS"))},
+          {tr("Source"), QString::fromStdString(rfx::mediumName(m_session->mediumOf(k)))},
           {tr("Notes"), notes.isEmpty() ? tr("none") : notes, notes.isEmpty() ? 1 : 4}}},
         {tr("Samples"),
          {{tr("Duration"), fmt::duration(static_cast<double>(sm.words) / rate)},

@@ -12,6 +12,7 @@
 
 #include <QComboBox>
 #include <QDialogButtonBox>
+#include <QFrame>
 #include <QHBoxLayout>
 #include <QLabel>
 #include <QPushButton>
@@ -41,10 +42,30 @@ StandardDialog::StandardDialog(const QList<StandardDoubt> &doubts, QWidget *pare
     intro->setWordWrap(true);
     layout->addWidget(intro);
 
+    // The tracks sit in a block of their own, a line between each.
+    auto *block = new QFrame(this);
+    block->setObjectName(QStringLiteral("standardList"));
+    block->setFrameShape(QFrame::StyledPanel);
+    block->setFrameShadow(QFrame::Sunken);
+    block->setAutoFillBackground(true);
+    block->setBackgroundRole(QPalette::Base);
+    auto *list = new QVBoxLayout(block);
+    list->setContentsMargins(1, 1, 1, 1);
+    list->setSpacing(0);
+    layout->addWidget(block);
+
     for (const StandardDoubt &d : doubts) {
-        auto *line = new QWidget(this);
+        QWidget *separator = nullptr;
+        if (!m_rows.isEmpty()) {
+            auto *rule = new QFrame(block);
+            rule->setFrameShape(QFrame::HLine);
+            rule->setFrameShadow(QFrame::Sunken);
+            list->addWidget(rule);
+            separator = rule;
+        }
+        auto *line = new QWidget(block);
         auto *row = new QHBoxLayout(line);
-        row->setContentsMargins(0, 0, 0, 0);
+        row->setContentsMargins(10, 8, 10, 8);
         auto *name = new QLabel(tr("%1 (said %2, lines of a %3)").arg(d.name, standardName(d.said), standardName(d.found)), line);
         name->setWordWrap(true);
         row->addWidget(name, 1);
@@ -61,12 +82,25 @@ StandardDialog::StandardDialog(const QList<StandardDoubt> &doubts, QWidget *pare
         cross->setFlat(true);
         cross->setFixedWidth(28);
         row->addWidget(cross);
-        layout->addWidget(line);
-        m_rows.push_back({d.key, choice, line, false});
+        list->addWidget(line);
+        m_rows.push_back({d.key, choice, line, separator, false});
         const int index = static_cast<int>(m_rows.size()) - 1;
         connect(cross, &QPushButton::clicked, this, [this, index] {
             m_rows[index].removed = true;
             m_rows[index].widget->hide();
+            // (the line before it goes; when there is none left to go, the one after the next track is the one that would lead the list)
+            if (m_rows[index].separator && m_rows[index].separator->isVisibleTo(this)) {
+                m_rows[index].separator->hide();
+            } else {
+                for (int next = index + 1; next < static_cast<int>(m_rows.size()); ++next) {
+                    if (!m_rows[next].removed) {
+                        if (m_rows[next].separator) {
+                            m_rows[next].separator->hide();
+                        }
+                        break;
+                    }
+                }
+            }
             const bool any = std::any_of(m_rows.begin(), m_rows.end(), [](const Row &r) { return !r.removed; });
             if (!any) {
                 reject();
