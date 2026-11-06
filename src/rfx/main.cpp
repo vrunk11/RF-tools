@@ -99,6 +99,30 @@ int runInfo(const QStringList &args)
     return kExitOk;
 }
 
+int runKeepPass0(const QStringList &args)
+{
+    QCommandLineParser parser;
+    parser.setApplicationDescription("Work out the TBC curve of the tracks of an .rfx file from their RF (locating the lines, as the pass 0 of ld-decode does) and keep it in the file, as a block added at its end (nothing else is rewritten): the speed of the disc and the time base correction are then there for the programs that read it, without working it out again.");
+    parser.addHelpOption();
+    const QCommandLineOption all("all", "Work the TBC curve out again for the tracks that have it already (without it they are left as they are).");
+    const QCommandLineOption rateMhz("rate-mhz", "Sample rate in MHz of a track that has none in the file.", "MHz", "75");
+    parser.addOption(all);
+    parser.addOption(rateMhz);
+    parser.addPositionalArgument("archive", "The .rfx file (a predictor archive).");
+    parser.process(args);
+    if (parser.positionalArguments().size() != 1) {
+        return usageError("tbc-curve wants one .rfx file");
+    }
+    bool ok = false;
+    const double rate = parser.value(rateMhz).toDouble(&ok);
+    if (!ok || rate <= 0) {
+        return usageError(QStringLiteral("--rate-mhz wants a positive number, not '%1'").arg(parser.value(rateMhz)));
+    }
+    const size_t done = rfx::keepPass0(parser.positionalArguments().first(), rate, !parser.isSet(all));
+    std::fprintf(stderr, "TBC curve worked out and kept for %zu track(s)\n", done);
+    return kExitOk;
+}
+
 int runUnpack(const QStringList &args)
 {
     QCommandLineParser parser;
@@ -165,6 +189,82 @@ int runUnpack(const QStringList &args)
     return kExitOk;
 }
 
+// The options that say what the disc is and how the signal was captured (what the person knows, not what the samples show): they are told of every
+// track the command writes (of a capture that is new, and of a track of a file as well), and only what is given is changed; an empty text, or
+// 0 for the copy, takes the value away.
+struct DiscOptions
+{
+    QCommandLineOption standard{"standard", "The video standard of the disc: pal, ntsc, pal-m, secam or ntsc-vhd.", "standard"};
+    QCommandLineOption reference{"reference", "A reference of the disc (a catalogue number, a title...).", "text"};
+    QCommandLineOption copy{QStringList{"copy", "disc-copy"}, "The number of the physical copy of the disc (the exemplar) the capture was made from (1, 2...).", "n"};
+    QCommandLineOption capture{"capture-number", "The number of the capture (a copy of the disc can be captured several times): 1, 2...", "n"};
+    QCommandLineOption face{"face", "The face of the disc: A, B, AB or BA.", "face"};
+    QCommandLineOption signal{"signal", "The signal that was captured: cvbs (composite) or yc (separate luma and chroma, Y/C).", "signal"};
+
+    void addTo(QCommandLineParser &parser)
+    {
+        for (const QCommandLineOption *o : {&standard, &reference, &copy, &capture, &face, &signal}) {
+            parser.addOption(*o);
+        }
+    }
+
+    // What was given; an empty string, or the message to give for a value that is not valid.
+    QString read(const QCommandLineParser &parser, rfx::InfoEdit &out) const
+    {
+        std::string value;
+        if (parser.isSet(standard)) {
+            const std::string text = parser.value(standard).toStdString();
+            if (text.empty()) {
+                out.standard = std::string();
+            } else if (rfx::parseStandard(text, value)) {
+                out.standard = value;
+            } else {
+                return QStringLiteral("--standard is pal, ntsc, pal-m, secam or ntsc-vhd, not '%1'").arg(parser.value(standard));
+            }
+        }
+        if (parser.isSet(reference)) {
+            out.reference = parser.value(reference).toStdString();
+        }
+        if (parser.isSet(copy)) {
+            bool ok = false;
+            const uint n = parser.value(copy).toUInt(&ok);
+            if (!ok) {
+                return QStringLiteral("--copy wants a number (0 takes it away), not '%1'").arg(parser.value(copy));
+            }
+            out.copy = n;
+        }
+        if (parser.isSet(capture)) {
+            bool ok = false;
+            const uint n = parser.value(capture).toUInt(&ok);
+            if (!ok) {
+                return QStringLiteral("--capture-number wants a number (0 takes it away), not '%1'").arg(parser.value(capture));
+            }
+            out.capture = n;
+        }
+        if (parser.isSet(face)) {
+            const std::string text = parser.value(face).toStdString();
+            if (text.empty()) {
+                out.face = std::string();
+            } else if (rfx::parseFace(text, value)) {
+                out.face = value;
+            } else {
+                return QStringLiteral("--face is A, B, AB or BA, not '%1'").arg(parser.value(face));
+            }
+        }
+        if (parser.isSet(signal)) {
+            const std::string text = parser.value(signal).toStdString();
+            if (text.empty()) {
+                out.signal = std::string();
+            } else if (rfx::parseSignal(text, value)) {
+                out.signal = value;
+            } else {
+                return QStringLiteral("--signal is cvbs or yc (Y/C), not '%1'").arg(parser.value(signal));
+            }
+        }
+        return QString();
+    }
+};
+
 int runPack(const QStringList &args)
 {
     QCommandLineParser parser;
@@ -184,7 +284,10 @@ int runPack(const QStringList &args)
     const QCommandLineOption flac("flac", "Code the tracks as FLAC instead of with the predictor: the file is then an ordinary Matroska audio file (a FLAC track per capture) that audio programs open, several times larger; unpack gives the captures back all the same.");
     const QCommandLineOption rawOption("raw", "Store the samples as they are instead of coding them: the file is then an ordinary Matroska audio file (a raw PCM track per capture) that audio programs open, as large as the captures; unpack gives the captures back all the same.");
     const QCommandLineOption threads("threads", "Threads coding segments (default: one per processor).", "n");
-    for (const QCommandLineOption *o : {&output, &level, &segment, &noVerify, &pass0, &ldDecode, &palOption, &rateMhz, &format, &device, &order, &flac, &rawOption, &threads}) {
+    DiscOptions disc;
+    disc.addTo(parser);
+    const QCommandLineOption keepPass0(QStringList{"keep-tbc-curve", "keep-pass0"}, "Keep the TBC curve of every capture (worked out from its RF: the lines located, as in the pass 0 of ld-decode) in the file: the speed of the disc and the time base correction are then there for the programs that read it (rf-analyse, ld-decode), without working it out again.");
+    for (const QCommandLineOption *o : {&output, &level, &segment, &noVerify, &pass0, &ldDecode, &palOption, &rateMhz, &format, &device, &order, &flac, &rawOption, &threads, &keepPass0}) {
         parser.addOption(*o);
     }
     parser.addPositionalArgument("captures", "The captures to pack.", "<capture>...");
@@ -219,6 +322,10 @@ int runPack(const QStringList &args)
     options.ldDecode = parser.value(ldDecode);
     options.externalPass0 = parser.isSet(ldDecode);
     options.pal = parser.isSet(palOption);
+    options.keepPass0 = parser.isSet(keepPass0);
+    if (const QString bad = disc.read(parser, options.info); !bad.isEmpty()) {
+        return usageError(bad);
+    }
     options.rateMhz = parser.value(rateMhz).toDouble(&ok);
     if (!ok || options.rateMhz <= 0) {
         return usageError(QStringLiteral("--rate-mhz wants a positive number, not '%1'").arg(parser.value(rateMhz)));
@@ -277,10 +384,11 @@ struct WorkOptions
     QCommandLineOption rateMhz{"rate-mhz", "Capture sample rate in MHz, for pass 0.", "MHz", "75"};
     QCommandLineOption device{"device", "Where the predictor runs: cpu or gpu (OpenCL, the same bits).", "device", "cpu"};
     QCommandLineOption threads{"threads", "Threads coding segments (default: one per processor).", "n"};
+    QCommandLineOption keepPass0{QStringList{"keep-tbc-curve", "keep-pass0"}, "Keep the TBC curve of every track (worked out from its RF) in the file: the ones the tracks kept from their files already have are carried over, the others are worked out."};
 
     void addTo(QCommandLineParser &parser)
     {
-        for (const QCommandLineOption *o : {&level, &noVerify, &pass0, &ldDecode, &palOption, &rateMhz, &device, &threads}) {
+        for (const QCommandLineOption *o : {&level, &noVerify, &pass0, &ldDecode, &palOption, &rateMhz, &device, &threads, &keepPass0}) {
             parser.addOption(*o);
         }
     }
@@ -305,6 +413,7 @@ struct WorkOptions
         out.ldDecode = parser.value(ldDecode);
         out.externalPass0 = parser.isSet(ldDecode);
         out.pal = parser.isSet(palOption);
+        out.keepPass0 = parser.isSet(keepPass0);
         out.rateMhz = parser.value(rateMhz).toDouble(&ok);
         if (!ok || out.rateMhz <= 0) {
             return QStringLiteral("--rate-mhz wants a positive number, not '%1'").arg(parser.value(rateMhz));
@@ -348,6 +457,9 @@ int runEdit(const QString &command, const QStringList &args)
     parser.addHelpOption();
     parser.addOption(output);
     work.addTo(parser);
+    DiscOptions disc;
+    disc.addTo(parser);
+    const QCommandLineOption changed("track", "The tracks to say it of (0 is the primary), e.g. 1,3; all of them when not given.", "tracks");
     if (command == QLatin1String("merge")) {
         parser.setApplicationDescription("Merge .rfx files into one (the tracks of each after the ones of the previous; no track is coded again unless --recode is given).");
         parser.addOption(recode);
@@ -360,8 +472,12 @@ int runEdit(const QString &command, const QStringList &args)
         parser.setApplicationDescription("Write a .rfx file without some of the tracks of another.");
         parser.addOption(track);
         parser.addPositionalArgument("archive", "The .rfx file.");
+    } else if (command == QLatin1String("tag")) {
+        parser.setApplicationDescription("Write a .rfx file with what is said of the disc and the signal changed in some tracks of another (--standard, --reference, --copy, --face, --signal): nothing is coded again, the samples are copied as they are.");
+        parser.addOption(changed);
+        parser.addPositionalArgument("archive", "The .rfx file.");
     } else {
-        parser.setApplicationDescription("Write a .rfx file with more captures than another.");
+        parser.setApplicationDescription("Write a .rfx file with more tracks than another: captures, and the tracks of other .rfx files (copied as they are where they can be).");
         parser.addPositionalArgument("archive", "The .rfx file.");
         parser.addPositionalArgument("captures", "Captures to add, in any format pack takes.", "<capture>...");
     }
@@ -374,6 +490,17 @@ int runEdit(const QString &command, const QStringList &args)
     if (!bad.isEmpty()) {
         return usageError(bad);
     }
+    rfx::InfoEdit info;
+    if (const QString bad = disc.read(parser, info); !bad.isEmpty()) {
+        return usageError(bad);
+    }
+    options.info = info;
+    const auto say = [&info](std::vector<rfx::Pick> &picks) {
+        // (said of every track that is written; of the new captures it is also what the options say)
+        for (rfx::Pick &p : picks) {
+            p.edit.info = info;
+        }
+    };
     const QStringList positional = parser.positionalArguments();
     const QString out = parser.value(output);
     QString error;
@@ -382,7 +509,9 @@ int runEdit(const QString &command, const QStringList &args)
             return usageError("merge wants at least two .rfx files");
         }
         std::vector<QString> archives(positional.begin(), positional.end());
-        rfx::assembleArchives(archives, rfx::pickAll(archives), out, options, parser.isSet(recode) ? std::optional<size_t>(1) : std::nullopt);
+        std::vector<rfx::Pick> picks = rfx::pickAll(archives);
+        say(picks);
+        rfx::assembleArchives(archives, picks, out, options, parser.isSet(recode) ? std::optional<size_t>(1) : std::nullopt);
     } else if (command == QLatin1String("extract") || command == QLatin1String("remove")) {
         if (positional.size() != 1) {
             return usageError(command + " wants one .rfx file");
@@ -395,17 +524,52 @@ int runEdit(const QString &command, const QStringList &args)
         if (which.empty()) {
             return usageError(command + (extract ? " wants --only" : " wants --track"));
         }
-        const std::vector<rfx::Pick> picks = extract ? rfx::pickSome(positional[0], which) : rfx::pickWithout(positional[0], which);
+        std::vector<rfx::Pick> picks = extract ? rfx::pickSome(positional[0], which) : rfx::pickWithout(positional[0], which);
+        say(picks);
+        rfx::assembleArchives({positional[0]}, picks, out, options, std::nullopt);
+    } else if (command == QLatin1String("tag")) {
+        if (positional.size() != 1) {
+            return usageError("tag wants one .rfx file");
+        }
+        if (!info.any()) {
+            return usageError("tag wants something to say: --standard, --reference, --copy, --capture-number, --face or --signal");
+        }
+        std::vector<size_t> which;
+        if (!trackList(parser, changed, which, error)) {
+            return usageError(error);
+        }
+        std::vector<rfx::Pick> picks = rfx::pickAll({positional[0]});
+        for (const size_t t : which) {
+            if (t >= picks.size()) {
+                return usageError(QStringLiteral("the file has %1 tracks, there is no track %2").arg(picks.size()).arg(t));
+            }
+        }
+        for (size_t i = 0; i < picks.size(); ++i) {
+            if (which.empty() || std::find(which.begin(), which.end(), i) != which.end()) {
+                picks[i].edit.info = info;
+            }
+        }
         rfx::assembleArchives({positional[0]}, picks, out, options, std::nullopt);
     } else {
         if (positional.size() < 2) {
-            return usageError("add wants a .rfx file and at least one capture");
+            return usageError("add wants a .rfx file and at least one capture or .rfx file to add");
         }
+        // What follows the file is added in the order it is given: the captures, and the tracks of other .rfx files (copied as they are where they can be).
+        std::vector<QString> archives = {positional[0]};
         std::vector<rfx::Pick> picks = rfx::pickAll({positional[0]});
         for (int i = 1; i < positional.size(); ++i) {
-            picks.push_back(rfx::Pick::fresh(positional[i]));
+            if (positional[i].endsWith(QLatin1String(".rfx"), Qt::CaseInsensitive)) {
+                archives.push_back(positional[i]);
+                for (rfx::Pick p : rfx::pickAll({positional[i]})) {
+                    p.arch = archives.size() - 1;
+                    picks.push_back(std::move(p));
+                }
+            } else {
+                picks.push_back(rfx::Pick::fresh(positional[i]));
+            }
         }
-        rfx::assembleArchives({positional[0]}, picks, out, options, std::nullopt);
+        say(picks);
+        rfx::assembleArchives(archives, picks, out, options, std::nullopt);
     }
     return kExitOk;
 }
@@ -597,7 +761,9 @@ void printHelp()
         "  merge     Merge .rfx files into one\n"
         "  extract   Write some of the tracks as a .rfx file of their own\n"
         "  remove    Write a .rfx file without some of the tracks\n"
-        "  add       Write a .rfx file with more captures\n"
+        "  add       Write a .rfx file with more captures or the tracks of other .rfx files\n"
+        "  tag       Write a .rfx file with the standard, reference, copy, capture number, face or signal of some tracks said or changed\n"
+        "  tbc-curve Work out the TBC curve of the tracks from their RF and keep it in the file (the speed, the time base correction; also keep-pass0)\n"
         "  info      Show what an .rfx file holds (--yaml: the whole metadata)\n"
         "  unpack    Rebuild the original files, checked by SHA-256 (--meta: metadata only)\n"
         "\n"
@@ -646,7 +812,7 @@ int main(int argc, char *argv[])
         if (command == QLatin1String("pack")) {
             return runPack(rest);
         }
-        if (command == QLatin1String("merge") || command == QLatin1String("extract") || command == QLatin1String("remove") || command == QLatin1String("add")) {
+        if (command == QLatin1String("merge") || command == QLatin1String("extract") || command == QLatin1String("remove") || command == QLatin1String("add") || command == QLatin1String("tag")) {
             return runEdit(command, rest);
         }
         if (command == QLatin1String("noise") || command == QLatin1String("refsel") || command == QLatin1String("bench") || command == QLatin1String("gpu-check")) {
@@ -654,6 +820,9 @@ int main(int argc, char *argv[])
         }
         if (command == QLatin1String("pass0")) {
             return runPass0Command(rest);
+        }
+        if (command == QLatin1String("tbc-curve") || command == QLatin1String("keep-pass0")) {
+            return runKeepPass0(rest);
         }
         if (command == QLatin1String("info")) {
             return runInfo(rest);
@@ -668,5 +837,5 @@ int main(int argc, char *argv[])
         std::fprintf(stderr, "rfx: %s\n", e.what());
         return kExitFailed;
     }
-    return usageError(QStringLiteral("unknown command '%1' (pack, merge, extract, remove, add, info, unpack, noise, refsel, bench, gpu-check)").arg(command));
+    return usageError(QStringLiteral("unknown command '%1' (pack, merge, extract, remove, add, tag, tbc-curve, info, unpack, noise, refsel, bench, gpu-check)").arg(command));
 }
