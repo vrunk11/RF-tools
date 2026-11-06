@@ -39,6 +39,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QDir>
+#include <QDialogButtonBox>
 #include <QMessageBox>
 #include <QElapsedTimer>
 #include <QFile>
@@ -337,6 +338,24 @@ static void answerNextBox(QMessageBox::StandardButton button, QString *text)
         }
         *text = box->text();
         box->button(button)->click();
+    });
+}
+
+// The next box that lists the tracks whose standard seems wrong is answered: `accept` presses Update, otherwise the cross of the first track is pressed.
+static void answerStandards(bool accept, bool *seen)
+{
+    QTimer::singleShot(50, qApp, [accept, seen] {
+        QWidget *box = QApplication::activeModalWidget();
+        if (!box || box->objectName() != QLatin1String("standardDialog")) {
+            answerStandards(accept, seen);
+            return;
+        }
+        *seen = true;
+        if (accept) {
+            box->findChild<QDialogButtonBox *>()->button(QDialogButtonBox::Ok)->click();
+        } else {
+            box->findChild<QPushButton *>("standardRemove")->click();
+        }
     });
 }
 
@@ -1368,6 +1387,28 @@ void AnalyseGuiTests::speedFromTheRf()
             QVERIFY(window.close());
             QVERIFY(!asked.isEmpty());
             QCOMPARE(rfx::Archive(quit).pass0().size(), size_t(1));
+        }
+        // A curve whose lines are not those of the standard said for the track: the window lists it. The cross leaves the track as it is; Update
+        // says what the lines found say (and the curve that was just worked out stays in the file).
+        {
+            rfx::PackOptions said = pack;
+            said.info.standard = std::string("pal");
+            const QString doubted = m_dir.filePath("fast-doubt.rfx");
+            rfx::packCaptures({path}, doubted, said);
+            for (const bool accept : {false, true}) {
+                MainWindow window;
+                QVERIFY(window.openFile(doubted));
+                auto *inside = window.findChild<Session *>();
+                QVERIFY(inside);
+                bool seen = false;
+                answerStandards(accept, &seen);
+                inside->computeCurve(0);
+                QTRY_VERIFY_WITH_TIMEOUT(seen, 60000);
+                QTest::qWait(300);
+                const rfx::Archive after(doubted);
+                QCOMPARE(QString::fromStdString(after.meta().sources[0].standard), accept ? QStringLiteral("ntsc") : QStringLiteral("pal"));
+                QCOMPARE(after.pass0().size(), accept ? size_t(1) : size_t(0));
+            }
         }
     }
     session->close();

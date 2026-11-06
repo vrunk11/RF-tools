@@ -34,6 +34,10 @@ std::optional<VideoSystem> systemOfStandard(const std::string &standard);
 // PAL when it says nothing.
 std::array<VideoSystem, 2> systemsToTry(const std::string &standard);
 
+// The standard to suggest when the one said for a track does not agree with the system its lines were found in (`foundPal`): "pal" or "ntsc".
+// Nothing when no standard is said, or it agrees: only what seems wrong is asked about.
+std::optional<std::string> doubtedStandard(const std::string &standard, bool foundPal);
+
 // Locate every line of track `track` of `reader`, from its RF, without demodulating it (a port of the `rfsync` module of
 // ld-decode-rust, the pass 0 of its read-time TBC): the carrier is lowest during a sync pulse, so a coarse frequency estimate
 // finds every pulse; the pulse lengths tell the horizontal sync from the equalizing and broad pulses of the vertical

@@ -52,6 +52,8 @@ public:
     // Locate the lines of the tracks of the opened file from their RF and keep them in it (the TBC curve), asking first.
     bool computePass0(bool ask = true, std::optional<size_t> only = std::nullopt);
     bool computePass0In(size_t arch, bool ask, std::optional<size_t> only);
+    // After a TBC curve is worked out: the tracks whose standard is not the one of their lines are listed, to be changed if the person wants.
+    void checkStandards(size_t arch, std::optional<size_t> only);
     // Check the tracks of the opened file (only: the track of the file with that number) against the checksums it keeps, by decoding them. Says what it
     // found, unless quiet; true when all is as packed.
     bool verify(std::optional<size_t> only, bool quiet = false);

@@ -170,6 +170,9 @@ public:
     int saveSpeedCurves(QString *error);
     // How many tracks have a TBC curve that is worked out here and not in their file (of a kind that can keep it): what is lost if the file is closed.
     int unsavedCurves() const;
+    // The tracks whose standard does not agree with the lines found in them, with the standard to suggest ("pal" or "ntsc"): what was found
+    // since the last call, which forgets it.
+    std::vector<std::pair<int, QString>> takeStandardDoubts();
     bool rfSpeed() const { return rfSpeed(m_selected); }
     void setRfSpeed(bool on) { setRfSpeed(m_selected, on); }
     // Whether some track's speed is still being worked out.
@@ -244,6 +247,8 @@ signals:
     // The speed from the RF was switched, or one more track of it is made.
     void rfSpeedChanged();
     void rfSpeedProgress();
+    // Once every TBC curve that was asked for is worked out: some tracks have a standard that is not the one of their lines (takeStandardDoubts).
+    void standardsDoubtful();
 
 private:
     void refresh();
@@ -310,6 +315,7 @@ private:
         double rate = 0.0;
     };
     std::vector<std::shared_ptr<const RfData>> m_rfData;
+    std::vector<std::pair<int, QString>> m_standardDoubts;
     std::vector<std::shared_ptr<const TimeBase>> m_timebases;
     std::shared_ptr<const TimeBase> timebaseOf(int k);
     std::vector<bool> m_rfStarted;

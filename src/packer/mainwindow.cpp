@@ -16,6 +16,8 @@
 #include "collapse.h"
 #include "format.h"
 #include "processdialog.h"
+#include "rfsync.h"
+#include "standarddialog.h"
 #include "sha256.h"
 #include "trackrow.h"
 
@@ -1050,7 +1052,44 @@ bool MainWindow::computePass0In(size_t arch, bool ask, std::optional<size_t> onl
     m_curveWanted = false;
     statusBar()->showMessage(tr("The TBC curve is kept in %1").arg(QDir::toNativeSeparators(path)), 8000);
     readPass0State();
+    checkStandards(arch, only);
     return true;
+}
+
+void MainWindow::checkStandards(size_t arch, std::optional<size_t> only)
+{
+    QList<StandardDoubt> doubts;
+    try {
+        const rfx::Archive archive(m_doc.archives()[arch]);
+        for (const auto &kept : archive.pass0()) {
+            if (only && kept.first != *only) {
+                continue;
+            }
+            for (int i = 0; i < m_doc.count(); ++i) {
+                const Entry &e = m_doc.at(i);
+                if (!e.fromArchive || e.removed || e.arch != arch || e.src != kept.first) {
+                    continue;
+                }
+                if (const auto suggestion = rfx::doubtedStandard(e.standard.toStdString(), kept.second.pal)) {
+                    doubts.push_back(StandardDoubt{e.name, i, e.standard, QString::fromStdString(*suggestion)});
+                }
+            }
+        }
+    } catch (const std::exception &) {
+        return;
+    }
+    if (doubts.isEmpty()) {
+        return;
+    }
+    StandardDialog dialog(doubts, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    for (const auto &change : dialog.accepted()) {
+        m_doc.edit(change.first).standard = change.second;
+    }
+    m_doc.touched();
+    refreshInfo();
 }
 
 void MainWindow::dragEnterEvent(QDragEnterEvent *event)

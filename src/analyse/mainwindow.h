@@ -17,6 +17,7 @@
 #include <QMainWindow>
 
 #include <functional>
+#include <map>
 
 #include <memory>
 #include <vector>
@@ -103,6 +104,10 @@ public:
     // Write what `edit` changes of track `k` in its .rfx file: the file is written again aside (the samples are copied as they are, nothing is coded
     // again) and takes its place, and the files are opened again as they were. False, with the reason said unless `quiet`, when it could not be.
     bool rewriteTrack(int k, const rfx::TrackEdit &edit, bool quiet = false);
+    // The same for several tracks of one file (edits by their number in it); select is the track selected when the file is open again.
+    bool rewriteFile(const QString &path, const std::map<size_t, rfx::TrackEdit> &edits, int select, bool quiet = false);
+    // The tracks whose standard is not the one of their lines (a TBC curve was just worked out): listed, to be changed if the person wants.
+    void fixStandards();
     void setRfSpeedAll() {
         for (int k = 0; k < m_session->trackCount(); ++k) {
             m_session->setRfSpeed(k, true);

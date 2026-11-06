@@ -1295,9 +1295,17 @@ void Session::startRfSpeed(int only)
             }
             m_rfPct[static_cast<size_t>(job.track)] = -1;
             --m_rfBusy;
-            QMetaObject::invokeMethod(this, [this, id] {
+            QMetaObject::invokeMethod(this, [this, id, data, job] {
                 if (m_openId.load() == id) {
+                    if (data && job.track >= 0 && job.track < trackCount()) {
+                        if (const auto suggestion = rfx::doubtedStandard(track(job.track).standard, data->pal)) {
+                            m_standardDoubts.push_back({job.track, QString::fromStdString(*suggestion)});
+                        }
+                    }
                     emit rfSpeedChanged();
+                    if (m_rfBusy.load() == 0 && !m_standardDoubts.empty()) {
+                        emit standardsDoubtful();
+                    }
                     if (std::any_of(m_aligned.begin(), m_aligned.end(), [](bool on) { return on; })) {
                         placeAligned();
                         refresh();   // (the waveform now has its curve to be aligned by)
@@ -1306,6 +1314,13 @@ void Session::startRfSpeed(int only)
             }, Qt::QueuedConnection);
         }
     }));
+}
+
+std::vector<std::pair<int, QString>> Session::takeStandardDoubts()
+{
+    std::vector<std::pair<int, QString>> out;
+    out.swap(m_standardDoubts);
+    return out;
 }
 
 double Session::rfSpeedAt(int k, qint64 sample) const

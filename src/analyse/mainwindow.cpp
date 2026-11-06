@@ -23,6 +23,7 @@
 #include "session.h"
 #include "verify.h"
 #include "spectrumview.h"
+#include "standarddialog.h"
 #include "statspanel.h"
 #include "trackeditdialog.h"
 #include "tracklist.h"
@@ -533,6 +534,8 @@ MainWindow::MainWindow() : m_session(new Session(this))
         m_statusSpeed->setText(working > 0 ? tr("Working out the TBC curve: %n track(s), %1%", nullptr, working).arg(m_session->rfMeanPercent()) : QString());
     };
     connect(m_session, &Session::rfSpeedChanged, this, showSpeedProgress);
+    // (queued: the box is asked once the work that made it is over)
+    connect(m_session, &Session::standardsDoubtful, this, &MainWindow::fixStandards, Qt::QueuedConnection);
     connect(m_session, &Session::rfSpeedProgress, this, showSpeedProgress);
     m_statusSpeed->hide();
     for (auto signal : {&Session::opened, &Session::closed, &Session::changed, &Session::rfSpeedChanged}) {
@@ -1840,6 +1843,14 @@ bool MainWindow::rewriteTrack(int k, const rfx::TrackEdit &edit, bool quiet)
     if (!m_session->isOpen() || k < 0 || k >= m_session->trackCount() || !m_session->inArchive(k)) {
         return false;
     }
+    return rewriteFile(m_session->sourcePath(k), {{m_session->localTrack(k), edit}}, k, quiet);
+}
+
+bool MainWindow::rewriteFile(const QString &path, const std::map<size_t, rfx::TrackEdit> &edits, int select, bool quiet)
+{
+    if (!m_session->isOpen()) {
+        return false;
+    }
     const auto say = [this, quiet](const QString &text) {
         if (!quiet) {
             QMessageBox::warning(this, tr("Edit"), text);
@@ -1849,8 +1860,6 @@ bool MainWindow::rewriteTrack(int k, const rfx::TrackEdit &edit, bool quiet)
     if (!confirmCurves()) {
         return false;
     }
-    const QString path = m_session->sourcePath(k);
-    const size_t local = m_session->localTrack(k);
     const std::vector<Session::Source> sources = m_openSources;
     // The files are let go (this one is replaced), and opened again after.
     m_session->close();
@@ -1858,13 +1867,15 @@ bool MainWindow::rewriteTrack(int k, const rfx::TrackEdit &edit, bool quiet)
     const QString aside = info.dir().filePath(info.completeBaseName() + QStringLiteral(".edit.rfx"));
     auto done = std::make_shared<std::atomic<bool>>(false);
     auto error = std::make_shared<QString>();
-    std::thread worker([path, aside, local, edit, done, error] {
+    std::thread worker([path, aside, edits, done, error] {
         try {
             std::vector<rfx::Pick> picks = rfx::pickAll({path});
-            if (local >= picks.size()) {
-                throw rfx::Error("the track is not in the file");
+            for (const auto &change : edits) {
+                if (change.first >= picks.size()) {
+                    throw rfx::Error("the track is not in the file");
+                }
+                picks[change.first].edit = change.second;
             }
-            picks[local].edit = edit;
             rfx::PackOptions options;
             options.order = rfx::OrderMode::Given;
             rfx::assembleArchives({path}, picks, aside, options, std::nullopt);
@@ -1901,7 +1912,7 @@ bool MainWindow::rewriteTrack(int k, const rfx::TrackEdit &edit, bool quiet)
         say(failure.isEmpty() ? reopen : failure + QLatin1Char('\n') + reopen);
         return false;
     }
-    m_session->setSelected(k);
+    m_session->setSelected(select);
     if (!failure.isEmpty()) {
         say(failure);
         return false;
@@ -1935,6 +1946,40 @@ bool MainWindow::confirmCurves()
         return true;
     default:
         return false;
+    }
+}
+
+void MainWindow::fixStandards()
+{
+    QList<StandardDoubt> list;
+    for (const auto &doubt : m_session->takeStandardDoubts()) {
+        if (!m_session->isOpen() || doubt.first >= m_session->trackCount() || !m_session->inArchive(doubt.first)) {
+            continue;
+        }
+        const rfx::SourceMeta &sm = m_session->track(doubt.first);
+        list.push_back(StandardDoubt{QString::fromStdString(sm.name), doubt.first, QString::fromStdString(sm.standard), doubt.second});
+    }
+    if (list.isEmpty()) {
+        return;
+    }
+    StandardDialog dialog(list, this);
+    if (dialog.exec() != QDialog::Accepted) {
+        return;
+    }
+    std::map<QString, std::map<size_t, rfx::TrackEdit>> byFile;
+    for (const auto &change : dialog.accepted()) {
+        rfx::TrackEdit e;
+        e.info.standard = change.second.toStdString();
+        byFile[m_session->sourcePath(change.first)][m_session->localTrack(change.first)] = e;
+    }
+    // The curves that were just worked out are kept in their files first: writing a file again would lose them.
+    QString error;
+    m_session->saveSpeedCurves(&error);
+    const int selected = m_session->selected();
+    for (const auto &file : byFile) {
+        if (!rewriteFile(file.first, file.second, selected)) {
+            break;
+        }
     }
 }
 

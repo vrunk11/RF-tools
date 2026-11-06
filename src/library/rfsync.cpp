@@ -1090,6 +1090,15 @@ std::array<VideoSystem, 2> systemsToTry(const std::string &standard)
     return {VideoSystem::Ntsc, VideoSystem::Pal};
 }
 
+std::optional<std::string> doubtedStandard(const std::string &standard, bool foundPal)
+{
+    const std::optional<VideoSystem> said = systemOfStandard(standard);
+    if (!said || (*said == VideoSystem::Pal) == foundPal) {
+        return std::nullopt;
+    }
+    return foundPal ? "pal" : "ntsc";
+}
+
 double nominalLineSamples(double fs, VideoSystem system)
 {
     return fs * (system == VideoSystem::Pal ? pal() : ntsc()).lineUs / 1e6;

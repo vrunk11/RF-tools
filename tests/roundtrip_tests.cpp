@@ -465,6 +465,15 @@ void testSystemOfStandard()
     }
     CHECK(!rfx::systemOfStandard("").has_value());
     CHECK(!rfx::systemOfStandard("unknown").has_value());
+    // Only what seems wrong is doubted: a standard that agrees, or none, is not.
+    CHECK(rfx::doubtedStandard("pal", false) == std::string("ntsc"));
+    CHECK(rfx::doubtedStandard("secam", false) == std::string("ntsc"));
+    CHECK(rfx::doubtedStandard("ntsc", true) == std::string("pal"));
+    CHECK(rfx::doubtedStandard("pal-m", true) == std::string("pal"));
+    CHECK(!rfx::doubtedStandard("pal", true).has_value());
+    CHECK(!rfx::doubtedStandard("ntsc-vhd", false).has_value());
+    CHECK(!rfx::doubtedStandard("", true).has_value());
+    CHECK(!rfx::doubtedStandard("", false).has_value());
     // Said: that one first and the other after. Not said: NTSC, then PAL.
     CHECK(rfx::systemsToTry("pal")[0] == VideoSystem::Pal && rfx::systemsToTry("pal")[1] == VideoSystem::Ntsc);
     CHECK(rfx::systemsToTry("pal-m")[0] == VideoSystem::Ntsc && rfx::systemsToTry("pal-m")[1] == VideoSystem::Pal);

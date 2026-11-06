@@ -3,6 +3,7 @@
 add_library(rfx-gui-common STATIC
     appearancemenus.cpp
     collapse.cpp
+    standarddialog.cpp
     theme.cpp
     themeeditordialog.cpp)
 target_include_directories(rfx-gui-common PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
