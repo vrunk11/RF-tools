@@ -16,6 +16,7 @@
 
 #include <QByteArray>
 #include <QString>
+#include <QStringList>
 #include <QVector>
 
 #include <optional>
@@ -31,6 +32,8 @@ struct Job
 {
     // The .rfx file the tracks come from; empty when the list is new.
     QString archive;
+    // The other .rfx files that tracks come from, after `archive` (a pick says which by its number: 0 is `archive`, 1 the first of these, and so on).
+    QStringList extraArchives;
     // The file to write (it may be the archive: it is written aside and takes its name).
     QString output;
     std::vector<rfx::Pick> picks;
@@ -38,10 +41,15 @@ struct Job
     Codec codec = Codec::Rfx;
     // Give the captures back instead of writing a file: `output` is then the folder, `only` the track of the archive (all when empty).
     bool unpack = false;
-    // Locate the lines of the tracks of rchive and keep them in it, as it is (nothing is coded again).
+    // Locate the lines of the tracks of the archive (only: that one) and keep them in it, as it is (nothing is coded again).
     bool pass0Only = false;
+    // Check the tracks of the archive (only: that one) against the checksums the file keeps, decoding them; nothing is written.
+    bool verify = false;
     std::optional<size_t> only;
 };
+
+// Every .rfx file of the job, in the order of the numbers of the picks.
+std::vector<QString> jobArchives(const Job &job);
 
 QByteArray jobToJson(const Job &job);
 // Throws rfx::Error for a document that is not a job.

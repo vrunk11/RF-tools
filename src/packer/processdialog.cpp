@@ -90,15 +90,15 @@ ProcessDialog::ProcessDialog(const QString &archive, Codec codec, QWidget *paren
     m_threads->setValue(settings.value(QStringLiteral("packThreads"), 0).toInt());
     m_verify = new QCheckBox(tr("Decode every segment again and compare it with its samples"), this);
     m_verify->setChecked(settings.value(QStringLiteral("packVerify"), true).toBool());
-    m_pass0 = new QCheckBox(tr("Compute the pass 0 curve (the speed of the disc and the time base correction)"), this);
+    m_pass0 = new QCheckBox(tr("Compute TBC curve (the speed of the disc and the time base correction)"), this);
     m_pass0->setChecked(settings.value(QStringLiteral("packPass0"), false).toBool());
-    m_pass0->setToolTip(tr("Locate the lines of every track from its RF once the file is written and keep them in it, so that rf-analyse shows the speed and aligns the captures at once. It takes minutes on large captures."));
+    m_pass0->setToolTip(tr("Work out the TBC curve of every track from its RF once the file is written and keep it in the file, so that rf-analyse shows the speed and aligns the captures at once. It takes minutes on large captures."));
     m_rate = new QDoubleSpinBox(this);
     m_rate->setRange(0.001, 1000.0);
     m_rate->setDecimals(4);
     m_rate->setSuffix(QStringLiteral(" MHz"));
     m_rate->setValue(settings.value(QStringLiteral("packRate"), 75.0).toDouble());
-    m_rate->setToolTip(tr("The rate of a capture that has no .yaml and no rate of its own; it is used to locate the lines of the captures."));
+    m_rate->setToolTip(tr("The rate of a capture that has no .yaml and no rate of its own; it is used to work out the TBC curve of the captures."));
     if (codec == Codec::Rfx) {
         form->addRow(tr("Level"), m_level);
     } else {
@@ -222,6 +222,8 @@ ProgressDialog::ProgressDialog(const Job &job, QWidget *parent) : QDialog(parent
     m_log->setReadOnly(true);
     m_log->setMinimumHeight(180);
     m_log->setLineWrapMode(QPlainTextEdit::NoWrap);
+    // (nothing to show until the work says something: just the bar, as long as it has nothing else to say)
+    m_log->hide();
     m_cancel = new QPushButton(tr("Cancel"), this);
     auto *row = new QHBoxLayout;
     row->addStretch();
@@ -270,7 +272,17 @@ void ProgressDialog::start()
         }
     });
     m_process->start(g_worker.isEmpty() ? QCoreApplication::applicationFilePath() : g_worker, {QStringLiteral("--job"), m_jobFile});
-    m_status->setText(tr("Writing…"));
+    m_status->setText(m_job.verify ? tr("Checking…") : tr("Writing…"));
+}
+
+// What the work says goes in a log that is shown when it has something in it, and the window grows to take it.
+void ProgressDialog::appendLog(const QString &line)
+{
+    m_log->appendPlainText(line);
+    if (m_log->isHidden()) {
+        m_log->show();
+        QMetaObject::invokeMethod(this, [this] { resize(width(), std::max(height(), sizeHint().height())); }, Qt::QueuedConnection);
+    }
 }
 
 void ProgressDialog::readOutput()
@@ -289,6 +301,14 @@ void ProgressDialog::readOutput()
         }
         static const QRegularExpression pass0(QStringLiteral("^pass 0 \\[(\\d+)/(\\d+)\\] (.+): (\\d+)%$"));
         static const QRegularExpression coding(QStringLiteral("^coding (.+): (\\d+)%$"));
+        static const QRegularExpression verifying(QStringLiteral("^verify: (\\d+)%$"));
+        const QRegularExpressionMatch vf = verifying.match(line);
+        if (vf.hasMatch()) {
+            m_bar->setRange(0, 100);
+            m_bar->setValue(vf.captured(1).toInt());
+            m_status->setText(tr("Checking the samples against their checksums: %1%").arg(vf.captured(1).toInt()));
+            continue;
+        }
         const QRegularExpressionMatch p0 = pass0.match(line);
         if (p0.hasMatch()) {
             // Where the lines of the captures are located: the bar goes over all of them.
@@ -297,9 +317,9 @@ void ProgressDialog::readOutput()
             const int percent = p0.captured(4).toInt();
             m_bar->setRange(0, of * 100);
             m_bar->setValue((at - 1) * 100 + percent);
-            m_status->setText(tr("Locating the lines of %1 (%2 of %3): %4%").arg(p0.captured(3)).arg(at).arg(of).arg(percent));
+            m_status->setText(tr("Working out the TBC curve of %1 (%2 of %3): %4%").arg(p0.captured(3)).arg(at).arg(of).arg(percent));
             if (percent == 100) {
-                m_log->appendPlainText(line);
+                appendLog(line);
             }
             continue;
         }
@@ -315,7 +335,7 @@ void ProgressDialog::readOutput()
         if (line.startsWith(QLatin1String("hashing and scanning"))) {
             m_status->setText(tr("Reading the captures…"));
         }
-        m_log->appendPlainText(line);
+        appendLog(line);
         m_tail = line;
         static const QRegularExpression count(QStringLiteral("^(\\d+) track\\(s\\) to write"));
         static const QRegularExpression done(QStringLiteral(": \\d+ -> \\d+ bytes"));

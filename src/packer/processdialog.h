@@ -72,9 +72,12 @@ public:
     // The program that does the work (the one that runs; the tests give rf-packer).
     static void setWorkerProgram(const QString &path);
     QString error() const { return m_error; }
+    // The last thing the work said (what a check ends with: the summary).
+    QString lastLine() const { return m_tail; }
 
 private:
     void readOutput();
+    void appendLog(const QString &line);
     void finished(int code, QProcess::ExitStatus status);
     void cancel();
 

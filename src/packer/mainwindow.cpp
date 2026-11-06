@@ -10,6 +10,7 @@
 
 #include "mainwindow.h"
 
+#include "archive.h"
 #include "appearancemenus.h"
 #include "capture.h"
 #include "collapse.h"
@@ -173,7 +174,11 @@ MainWindow::MainWindow()
     m_infoButton->setCheckable(true);
     m_infoButton->setChecked(m_infoShown);
     m_infoButton->setToolTip(tr("Show or hide the panel with what is known of the selected track (key I)"));
+    m_verifyAll = new QPushButton(tr("Check"), left);
+    m_verifyAll->setObjectName(QStringLiteral("verifyAll"));
+    m_verifyAll->setToolTip(tr("Check the whole file: decode every track and compare it with the SHA-256 the file keeps of its samples"));
     buttons->addWidget(addButton, 1);
+    buttons->addWidget(m_verifyAll);
     buttons->addWidget(m_infoButton);
     leftLayout->addLayout(buttons);
     root->addWidget(left);
@@ -225,6 +230,64 @@ MainWindow::MainWindow()
     form->addWidget(m_name, 0, 1);
     form->addWidget(rateLabel, 1, 0);
     form->addWidget(m_rate, 1, 1);
+    // What is said of the disc and of how the signal was captured (what the person knows: nothing is guessed from the samples).
+    const auto label = [infoBody](const QString &text) {
+        auto *l = new QLabel(text, infoBody);
+        l->setForegroundRole(QPalette::PlaceholderText);
+        return l;
+    };
+    m_standard = new QComboBox(infoBody);
+    m_standard->setObjectName(QStringLiteral("infoStandard"));
+    m_standard->addItem(tr("not said"), QString());
+    for (const auto &s : {std::make_pair("pal", "PAL"), std::make_pair("ntsc", "NTSC"), std::make_pair("pal-m", "PAL-M"), std::make_pair("secam", "SECAM"), std::make_pair("ntsc-vhd", "NTSC-VHD")}) {
+        m_standard->addItem(QString::fromLatin1(s.second), QString::fromLatin1(s.first));
+    }
+    m_standard->setToolTip(tr("The video standard of the disc"));
+    m_reference = new QLineEdit(infoBody);
+    m_reference->setObjectName(QStringLiteral("infoReference"));
+    m_reference->setPlaceholderText(tr("a catalogue number, a title..."));
+    m_reference->setToolTip(tr("A reference of the disc"));
+    m_copy = new QSpinBox(infoBody);
+    m_copy->setObjectName(QStringLiteral("infoCopy"));
+    m_copy->setRange(0, 999);
+    m_copy->setSpecialValueText(tr("not said"));
+    m_copy->setToolTip(tr("The number of the physical copy of the disc (the exemplar) the capture was made from"));
+    m_capture = new QSpinBox(infoBody);
+    m_capture->setObjectName(QStringLiteral("infoCapture"));
+    m_capture->setRange(0, 999);
+    m_capture->setSpecialValueText(tr("not said"));
+    m_capture->setToolTip(tr("The number of the capture: a copy of the disc can be captured several times"));
+    m_face = new QComboBox(infoBody);
+    m_face->setObjectName(QStringLiteral("infoFace"));
+    m_face->addItem(tr("not said"), QString());
+    for (const char *f : {"A", "B", "AB", "BA"}) {
+        m_face->addItem(QString::fromLatin1(f), QString::fromLatin1(f));
+    }
+    m_face->setToolTip(tr("The face of the disc: A, B, or both in the file (AB: A then B, BA: B then A)"));
+    m_cvbs = new QPushButton(tr("CVBS"), infoBody);
+    m_cvbs->setObjectName(QStringLiteral("infoCvbs"));
+    m_yc = new QPushButton(tr("Y/C"), infoBody);
+    m_yc->setObjectName(QStringLiteral("infoYc"));
+    for (QPushButton *b : {m_cvbs, m_yc}) {
+        b->setCheckable(true);
+        b->setToolTip(tr("The signal that was captured: composite (CVBS) or separate luma and chroma (Y/C). Click again to say nothing."));
+    }
+    auto *signalRow = new QHBoxLayout;
+    signalRow->addWidget(m_cvbs);
+    signalRow->addWidget(m_yc);
+    signalRow->addStretch();
+    form->addWidget(label(tr("Standard")), 2, 0);
+    form->addWidget(m_standard, 2, 1);
+    form->addWidget(label(tr("Reference")), 3, 0);
+    form->addWidget(m_reference, 3, 1);
+    form->addWidget(label(tr("Disc copy")), 4, 0);
+    form->addWidget(m_copy, 4, 1);
+    form->addWidget(label(tr("Capture no.")), 5, 0);
+    form->addWidget(m_capture, 5, 1);
+    form->addWidget(label(tr("Face")), 6, 0);
+    form->addWidget(m_face, 6, 1);
+    form->addWidget(label(tr("Signal")), 7, 0);
+    form->addLayout(signalRow, 7, 1);
     body->addLayout(form);
 
     m_facts = new QLabel(infoBody);
@@ -233,6 +296,17 @@ MainWindow::MainWindow()
     m_facts->setTextInteractionFlags(Qt::TextSelectableByMouse);
     m_facts->setWordWrap(true);
     body->addWidget(m_facts);
+    m_verifyTrack = new QPushButton(tr("Check this track"), infoBody);
+    m_verifyTrack->setObjectName(QStringLiteral("verifyTrack"));
+    m_verifyTrack->setToolTip(tr("Decode the track and compare it with the SHA-256 the file keeps of its samples"));
+    m_pass0Track = new QPushButton(tr("Compute TBC curve"), infoBody);
+    m_pass0Track->setObjectName(QStringLiteral("pass0Track"));
+    m_pass0Track->setToolTip(tr("Work out the TBC curve of the track from its RF and keep it in the file (the speed of the disc and the time base correction, which rf-analyse then shows at once); the file is only added to"));
+    auto *trackButtons = new QHBoxLayout;
+    trackButtons->addWidget(m_verifyTrack);
+    trackButtons->addWidget(m_pass0Track);
+    trackButtons->addStretch();
+    body->addLayout(trackButtons);
 
     auto *sidecarsLabel = new QLabel(tr("Files that go with it"), infoBody);
     sidecarsLabel->setForegroundRole(QPalette::PlaceholderText);
@@ -293,6 +367,34 @@ MainWindow::MainWindow()
     connect(m_notes, &QPlainTextEdit::textChanged, this, &MainWindow::editNotes);
     connect(m_deleteNotes, &QPushButton::clicked, this, [this] { m_notes->clear(); });
     connect(m_addSidecar, &QPushButton::clicked, this, &MainWindow::addSidecar);
+    connect(m_standard, &QComboBox::currentIndexChanged, this, [this](int) { editDisc(); });
+    connect(m_reference, &QLineEdit::textEdited, this, [this](const QString &) { editDisc(); });
+    connect(m_copy, &QSpinBox::valueChanged, this, [this](int) { editDisc(); });
+    connect(m_capture, &QSpinBox::valueChanged, this, [this](int) { editDisc(); });
+    connect(m_face, &QComboBox::currentIndexChanged, this, [this](int) { editDisc(); });
+    connect(m_cvbs, &QPushButton::clicked, this, [this](bool on) {
+        if (on) {
+            m_yc->setChecked(false);
+        }
+        editDisc();
+    });
+    connect(m_yc, &QPushButton::clicked, this, [this](bool on) {
+        if (on) {
+            m_cvbs->setChecked(false);
+        }
+        editDisc();
+    });
+    connect(m_verifyAll, &QPushButton::clicked, this, [this] { verify(std::nullopt); });
+    connect(m_pass0Track, &QPushButton::clicked, this, [this] {
+        if (m_picked >= 0 && m_picked < m_doc.count() && m_doc.at(m_picked).fromArchive) {
+            computePass0In(m_doc.at(m_picked).arch, true, m_doc.at(m_picked).src);
+        }
+    });
+    connect(m_verifyTrack, &QPushButton::clicked, this, [this] {
+        if (m_picked >= 0 && m_picked < m_doc.count() && m_doc.at(m_picked).fromArchive) {
+            verifyIn(m_doc.at(m_picked).arch, m_doc.at(m_picked).src);
+        }
+    });
     connect(m_removeSidecar, &QPushButton::clicked, this, &MainWindow::removeSidecar);
     connect(m_sidecars, &QListWidget::currentRowChanged, this, [this](int row) { m_removeSidecar->setEnabled(row >= 0 && m_name->isEnabled()); });
 
@@ -309,15 +411,20 @@ void MainWindow::buildMenus()
     file->addAction(tr("&Create RFX from a new list"), this, &MainWindow::newList)->setShortcut(QKeySequence::New);
     file->addAction(tr("&Open RFX…"), this, &MainWindow::chooseArchive)->setShortcut(QKeySequence::Open);
     file->addAction(tr("&Add track…"), this, &MainWindow::chooseCaptures)->setShortcut(QKeySequence(Qt::CTRL | Qt::Key_T));
+    file->addAction(tr("Add the tracks of an .rfx &file…"), this, &MainWindow::chooseArchiveToAdd)->setObjectName(QStringLiteral("addArchive"));
     file->addSeparator();
     m_unpackAll = file->addAction(tr("&Unpack all the tracks…"), this, [this] { unpack(std::nullopt); });
     m_unpackAll->setObjectName(QStringLiteral("unpackAll"));
-    m_pass0Action = file->addAction(tr("Compute the &pass 0 curve"), this, [this] { computePass0(); });
+    m_verifyAction = file->addAction(tr("&Check the file"), this, [this] { verify(std::nullopt); });
+    m_verifyAction->setObjectName(QStringLiteral("verifyFile"));
+    m_verifyAction->setToolTip(tr("Decode every track of the file and compare it with the SHA-256 the file keeps of its samples (a track alone: its Check button in the panel of information)"));
+    m_pass0Action = file->addAction(tr("Compute &TBC curve"), this, [this] { computePass0(); });
     m_pass0Action->setObjectName(QStringLiteral("computePass0"));
-    m_pass0Action->setToolTip(tr("Locate the lines of every track from its RF and keep them in the file (the speed of the disc and the time base correction, which rf-analyse then shows at once)."));
+    m_pass0Action->setToolTip(tr("Work out the TBC curve of every track from its RF and keep it in the file (the speed of the disc and the time base correction, which rf-analyse then shows at once)."));
     connect(file, &QMenu::aboutToShow, this, [this] {
-        m_unpackAll->setEnabled(!m_doc.archive().isEmpty());
-        m_pass0Action->setEnabled(!m_doc.archive().isEmpty() && m_doc.codec() == Codec::Rfx);
+        m_unpackAll->setEnabled(!m_doc.archives().empty());
+        m_verifyAction->setEnabled(!m_doc.archives().empty());
+        m_pass0Action->setEnabled(!m_doc.archives().empty() && m_doc.codec() == Codec::Rfx);
     });
     file->addSeparator();
     file->addAction(tr("&Quit"), this, &QWidget::close)->setShortcut(QKeySequence::Quit);
@@ -388,7 +495,7 @@ void MainWindow::rebuildList()
         connect(row, &TrackRow::picked, this, [this](int number) { pick(number - 1); });
         connect(row, &TrackRow::moved, this, [this](int number, int delta) { move(number - 1, delta); });
         connect(row, &TrackRow::removeAsked, this, [this](int number) { removeTrack(number - 1); });
-        connect(row, &TrackRow::unpackAsked, this, [this](int number) { unpack(m_doc.at(number - 1).src); });
+        connect(row, &TrackRow::unpackAsked, this, [this](int number) { unpackIn(m_doc.at(number - 1).arch, m_doc.at(number - 1).src); });
         connect(row, &TrackRow::restoreAsked, this, [this](int number) { m_doc.restore(number - 1); });
         m_listLayout->addWidget(row);
     }
@@ -396,7 +503,7 @@ void MainWindow::rebuildList()
     syncFormat();
     m_hint->setVisible(n == 0);
     m_hint->setGeometry(m_listScroll->viewport()->rect());
-    m_processButton->setText(m_doc.archive().isEmpty() ? tr("Create RFX…") : tr("Process…"));
+    m_processButton->setText(m_doc.archive().isEmpty() || m_doc.archives().size() > 1 ? tr("Create RFX…") : tr("Process…"));
     refreshSummary();
 }
 
@@ -449,11 +556,20 @@ void MainWindow::pick(int index)
 
 void MainWindow::refreshInfo()
 {
+    updateVerify();
     const bool has = m_picked >= 0 && m_picked < m_doc.count();
     const QSignalBlocker a(m_name);
     const QSignalBlocker b(m_rate);
     const QSignalBlocker c(m_notes);
     const QSignalBlocker d(m_sidecars);
+    const QSignalBlocker blockStandard(m_standard);
+    const QSignalBlocker blockReference(m_reference);
+    const QSignalBlocker blockCopy(m_copy);
+    const QSignalBlocker blockCapture(m_capture);
+    const QSignalBlocker blockFace(m_face);
+    for (QWidget *w : std::initializer_list<QWidget *>{m_standard, m_reference, m_copy, m_capture, m_face, m_cvbs, m_yc}) {
+        w->setEnabled(has);
+    }
     m_sidecars->clear();
     m_name->setEnabled(has);
     m_rate->setReadOnly(true);
@@ -465,6 +581,13 @@ void MainWindow::refreshInfo()
     m_addSidecar->setEnabled(has);
     m_removeSidecar->setEnabled(false);
     if (!has) {
+        m_standard->setCurrentIndex(0);
+        m_reference->clear();
+        m_copy->setValue(0);
+        m_capture->setValue(0);
+        m_face->setCurrentIndex(0);
+        m_cvbs->setChecked(false);
+        m_yc->setChecked(false);
         m_infoTitle->setText(tr("<i>No track selected</i>"));
         m_name->clear();
         m_rate->setValue(0.0);
@@ -479,6 +602,15 @@ void MainWindow::refreshInfo()
     m_addSidecar->setEnabled(existing);
     m_name->setToolTip(existing ? QString() : tr("The name of a new track is the name of its file"));
     m_infoTitle->setText(QStringLiteral("<b>%1</b>").arg(e.name.toHtmlEscaped()));
+    m_standard->setCurrentIndex(std::max(0, m_standard->findData(e.standard)));
+    if (m_reference->text() != e.reference) {
+        m_reference->setText(e.reference);
+    }
+    m_copy->setValue(e.copy);
+    m_capture->setValue(e.captureNumber);
+    m_face->setCurrentIndex(std::max(0, m_face->findData(e.face)));
+    m_cvbs->setChecked(e.signal == QLatin1String("cvbs"));
+    m_yc->setChecked(e.signal == QLatin1String("yc"));
     m_name->setText(e.name);
     m_rate->setValue(e.rateHz / 1e6);
     if (m_notes->toPlainText() != e.notes) {
@@ -508,6 +640,9 @@ void MainWindow::refreshInfo()
     add(tr("Format"), QString::fromStdString(sm.fmt));
     add(tr("Size"), fmt::bytes(sm.size));
     if (existing) {
+        if (m_doc.archives().size() > 1) {
+            add(tr("File"), QFileInfo(m_doc.archiveOf(m_picked)).fileName());
+        }
         add(tr("Stored in .rfx"), fmt::bytes(e.packed) + QStringLiteral(" · ") + fmt::percent(e.packed, sm.size));
         add(tr("Samples"), fmt::count(static_cast<qint64>(sm.words)));
         add(tr("SHA-256"), sm.sha256.empty() ? QStringLiteral("-") : QString::fromStdString(sm.sha256).left(12) + QStringLiteral("…"));
@@ -516,8 +651,29 @@ void MainWindow::refreshInfo()
             refs << QString::number(r + 1);
         }
         add(tr("Predicted from"), refs.isEmpty() ? tr("none (coded alone)") : tr("track %1").arg(refs.join(QStringLiteral(", "))));
+        if (m_doc.codec() == Codec::Rfx) {
+            const auto kept = m_pass0Kept.find({e.arch, e.src});
+            add(tr("TBC curve"), kept != m_pass0Kept.end() ? kept->second : tr("not kept"));
+        }
     }
     m_facts->setText(QStringLiteral("<table>%1</table>").arg(rows.join(QString())));
+}
+
+void MainWindow::editDisc()
+{
+    if (m_picked < 0 || m_picked >= m_doc.count()) {
+        return;
+    }
+    m_editing = true;
+    Entry &e = m_doc.edit(m_picked);
+    e.standard = m_standard->currentData().toString();
+    e.reference = m_reference->text();
+    e.copy = m_copy->value();
+    e.captureNumber = m_capture->value();
+    e.face = m_face->currentData().toString();
+    e.signal = m_cvbs->isChecked() ? QStringLiteral("cvbs") : (m_yc->isChecked() ? QStringLiteral("yc") : QString());
+    m_doc.touched();
+    m_editing = false;
 }
 
 void MainWindow::editName(const QString &text)
@@ -605,7 +761,7 @@ bool MainWindow::confirmDiscard()
     if (!m_doc.isChanged()) {
         return true;
     }
-    const auto answer = QMessageBox::question(this, tr("RF-packer"), tr("The list has changes that are not written. Discard them?"));
+    const auto answer = QMessageBox::question(this, tr("RF-packer"), tr("The list has changes that are not written (tracks added, removed or moved, names, notes or the files that go with a track, how it is written). Discard them?"));
     return answer == QMessageBox::Yes;
 }
 
@@ -626,10 +782,18 @@ void MainWindow::chooseArchive()
     }
 }
 
+void MainWindow::chooseArchiveToAdd()
+{
+    const QStringList paths = QFileDialog::getOpenFileNames(this, tr("Add the tracks of .rfx files"), QSettings().value(QStringLiteral("lastDir")).toString(), tr("RFX archives (*.rfx)"));
+    if (!paths.isEmpty()) {
+        addCaptures(paths);
+    }
+}
+
 void MainWindow::chooseCaptures()
 {
     const QStringList paths = QFileDialog::getOpenFileNames(this, tr("Add captures"), QSettings().value(QStringLiteral("lastDir")).toString(),
-                                                            tr("Captures (*.s16 *.r16 *.s8 *.r8 *.lds *.flac *.ldf);;All files (*)"));
+                                                            tr("Captures and .rfx files (*.s16 *.r16 *.s8 *.r8 *.lds *.flac *.ldf *.rfx);;All files (*)"));
     if (!paths.isEmpty()) {
         addCaptures(paths);
     }
@@ -647,6 +811,7 @@ bool MainWindow::openArchive(const QString &path)
     }
     QSettings().setValue(QStringLiteral("lastDir"), QFileInfo(path).absolutePath());
     m_picked = m_doc.count() > 0 ? 0 : -1;
+    readPass0State();
     return true;
 }
 
@@ -655,7 +820,7 @@ bool MainWindow::addCaptures(const QStringList &paths)
     bool all = true;
     for (const QString &path : paths) {
         QString error;
-        if (!m_doc.addCapture(path, &error)) {
+        if (isArchiveName(path) ? !m_doc.addArchive(path, &error) : !m_doc.addCapture(path, &error)) {
             QMessageBox::warning(this, tr("Add track"), tr("%1 cannot be added: %2").arg(QFileInfo(path).fileName(), error));
             all = false;
         }
@@ -677,7 +842,8 @@ bool MainWindow::process(const QString &output, const rfx::PackOptions *options)
         opts = *options;
     }
     if (target.isEmpty()) {
-        ProcessDialog dialog(m_doc.archive(), m_doc.codec(), this);
+        // (a list made of several files is written to a new file: it is not any of them)
+        ProcessDialog dialog(m_doc.archives().size() > 1 ? QString() : m_doc.archive(), m_doc.codec(), this);
         if (dialog.exec() != QDialog::Accepted) {
             return false;
         }
@@ -685,6 +851,8 @@ bool MainWindow::process(const QString &output, const rfx::PackOptions *options)
         opts = dialog.options();
     }
     const Job job = m_doc.toJob(target, opts);
+    // (asked for while the file is written: if the work is stopped, the question comes back at the end)
+    m_curveWanted = opts.keepPass0 && m_doc.codec() == Codec::Rfx;
     ProgressDialog progress(job, this);
     progress.start();
     if (progress.exec() != QDialog::Accepted) {
@@ -693,34 +861,62 @@ bool MainWindow::process(const QString &output, const rfx::PackOptions *options)
         }
         return false;
     }
+    m_curveWanted = false;
     statusBar()->showMessage(tr("%1 written").arg(QFileInfo(target).fileName()), 8000);
-    if (m_doc.codec() != Codec::Rfx) {
+    if (m_doc.codec() != Codec::Rfx && m_doc.archives().size() <= 1) {
         return true;
     }
     // What was written is what the list is now.
     const int keep = m_picked;
     m_doc.open(target, nullptr);
+    readPass0State();
     m_picked = std::min(keep, m_doc.count() - 1);
     return true;
 }
 
 bool MainWindow::unpack(std::optional<size_t> only, const QString &folder)
 {
-    if (m_doc.archive().isEmpty()) {
+    // The track of the first file, or every track of every file of the list, into one folder.
+    if (m_doc.archives().empty()) {
         return false;
     }
     QString target = folder;
     if (target.isEmpty()) {
         QSettings settings;
-        const QString start = settings.value(QStringLiteral("unpackDir"), QFileInfo(m_doc.archive()).absolutePath()).toString();
+        const QString start = settings.value(QStringLiteral("unpackDir"), QFileInfo(m_doc.archives().front()).absolutePath()).toString();
         target = QFileDialog::getExistingDirectory(this, only ? tr("Unpack the track into…") : tr("Unpack all the tracks into…"), start);
         if (target.isEmpty()) {
             return false;
         }
         settings.setValue(QStringLiteral("unpackDir"), target);
     }
+    if (only) {
+        return unpackIn(0, only, target);
+    }
+    bool all = true;
+    for (size_t a = 0; a < m_doc.archives().size() && all; ++a) {
+        all = unpackIn(a, std::nullopt, target);
+    }
+    return all;
+}
+
+bool MainWindow::unpackIn(size_t arch, std::optional<size_t> only, const QString &folder)
+{
+    if (arch >= m_doc.archives().size()) {
+        return false;
+    }
+    QString target = folder;
+    if (target.isEmpty()) {
+        QSettings settings;
+        const QString start = settings.value(QStringLiteral("unpackDir"), QFileInfo(m_doc.archives()[arch]).absolutePath()).toString();
+        target = QFileDialog::getExistingDirectory(this, tr("Unpack the track into…"), start);
+        if (target.isEmpty()) {
+            return false;
+        }
+        settings.setValue(QStringLiteral("unpackDir"), target);
+    }
     Job job;
-    job.archive = m_doc.archive();
+    job.archive = m_doc.archives()[arch];
     job.output = target;
     job.unpack = true;
     job.only = only;
@@ -739,21 +935,111 @@ bool MainWindow::unpack(std::optional<size_t> only, const QString &folder)
     return true;
 }
 
-bool MainWindow::computePass0(bool ask)
+void MainWindow::updateVerify()
 {
-    if (m_doc.archive().isEmpty()) {
+    const bool archive = !m_doc.archives().empty();
+    const bool track = archive && m_picked >= 0 && m_picked < m_doc.count() && m_doc.at(m_picked).fromArchive;
+    m_verifyAll->setEnabled(archive);
+    m_verifyTrack->setEnabled(track);
+    m_pass0Track->setEnabled(track && m_doc.codec() == Codec::Rfx);
+}
+
+bool MainWindow::verify(std::optional<size_t> only, bool quiet)
+{
+    // One track: of the first file. None: every file of the list, one after the other.
+    if (only) {
+        return verifyIn(0, only, quiet);
+    }
+    bool all = !m_doc.archives().empty();
+    for (size_t a = 0; a < m_doc.archives().size(); ++a) {
+        all = verifyIn(a, std::nullopt, quiet) && all;
+    }
+    return all;
+}
+
+bool MainWindow::verifyIn(size_t arch, std::optional<size_t> only, bool quiet)
+{
+    if (arch >= m_doc.archives().size()) {
         return false;
     }
-    if (ask && QMessageBox::question(this, tr("RF-packer"), tr("Locate the lines of the tracks of %1 from their RF and keep them in the file? It takes minutes on large captures; the file is only added to, nothing in it is coded again.").arg(QFileInfo(m_doc.archive()).fileName())) != QMessageBox::Yes) {
-        return false;
-    }
+    const QString path = m_doc.archives()[arch];
     Job job;
-    job.archive = m_doc.archive();
-    job.pass0Only = true;
+    job.archive = path;
+    job.verify = true;
+    job.only = only;
     job.codec = m_doc.codec();
     job.options.order = rfx::OrderMode::Given;
     ProgressDialog progress(job, this);
-    progress.setWindowTitle(tr("Pass 0 of %1").arg(QFileInfo(m_doc.archive()).fileName()));
+    progress.setWindowTitle(only ? tr("Checking track %1 of %2").arg(*only + 1).arg(QFileInfo(path).fileName()) : tr("Checking %1").arg(QFileInfo(path).fileName()));
+    progress.start();
+    if (progress.exec() != QDialog::Accepted) {
+        if (!progress.error().isEmpty() && !quiet) {
+            QMessageBox::critical(this, tr("Check"), progress.error());
+        }
+        return false;
+    }
+    if (!quiet) {
+        QMessageBox::information(this, tr("Check"), progress.lastLine());
+    }
+    statusBar()->showMessage(progress.lastLine(), 8000);
+    return true;
+}
+
+// Which tracks of the files of the list keep the lines of their pass 0, and what they are (the system, the number of fields).
+void MainWindow::readPass0State()
+{
+    m_pass0Kept.clear();
+    for (size_t a = 0; a < m_doc.archives().size() && m_doc.codec() == Codec::Rfx; ++a) {
+        try {
+            const rfx::Archive archive(m_doc.archives()[a]);
+            for (const auto &entry : archive.pass0()) {
+                m_pass0Kept[{a, entry.first}] = tr("kept (%1, %2 fields)").arg(entry.second.pal ? tr("PAL") : tr("NTSC")).arg(entry.second.fields.size());
+            }
+        } catch (const std::exception &) {
+            // (a file that is not read here has nothing to say of them)
+        }
+    }
+    refreshInfo();
+}
+
+bool MainWindow::computePass0(bool ask, std::optional<size_t> only)
+{
+    // One track: of the first file. None: every file of the list.
+    if (only) {
+        return computePass0In(0, ask, only);
+    }
+    if (m_doc.archives().empty()) {
+        return false;
+    }
+    if (ask && QMessageBox::question(this, tr("RF-packer"), tr("Work out the TBC curve of the tracks of the %n file(s) from their RF and keep it in the file? It takes minutes on large captures; the file is only added to, nothing in it is coded again.", nullptr, static_cast<int>(m_doc.archives().size()))) != QMessageBox::Yes) {
+        return false;
+    }
+    bool all = true;
+    for (size_t a = 0; a < m_doc.archives().size() && all; ++a) {
+        all = computePass0In(a, false, std::nullopt);
+    }
+    return all;
+}
+
+bool MainWindow::computePass0In(size_t arch, bool ask, std::optional<size_t> only)
+{
+    if (arch >= m_doc.archives().size()) {
+        return false;
+    }
+    const QString path = m_doc.archives()[arch];
+    m_curveWanted = true;
+    const QString what = only ? tr("the track %1 of %2").arg(*only + 1).arg(QFileInfo(path).fileName()) : tr("the tracks of %1").arg(QFileInfo(path).fileName());
+    if (ask && QMessageBox::question(this, tr("RF-packer"), tr("Work out the TBC curve of %1 from their RF and keep it in the file? It takes minutes on large captures; the file is only added to, nothing in it is coded again.").arg(what)) != QMessageBox::Yes) {
+        return false;
+    }
+    Job job;
+    job.archive = path;
+    job.pass0Only = true;
+    job.only = only;
+    job.codec = m_doc.codec();
+    job.options.order = rfx::OrderMode::Given;
+    ProgressDialog progress(job, this);
+    progress.setWindowTitle(tr("TBC curve of %1").arg(QFileInfo(path).fileName()));
     progress.start();
     if (progress.exec() != QDialog::Accepted) {
         if (!progress.error().isEmpty()) {
@@ -761,7 +1047,9 @@ bool MainWindow::computePass0(bool ask)
         }
         return false;
     }
-    statusBar()->showMessage(tr("The pass 0 curve is kept in %1").arg(QDir::toNativeSeparators(m_doc.archive())), 8000);
+    m_curveWanted = false;
+    statusBar()->showMessage(tr("The TBC curve is kept in %1").arg(QDir::toNativeSeparators(path)), 8000);
+    readPass0State();
     return true;
 }
 
@@ -775,27 +1063,70 @@ void MainWindow::dragEnterEvent(QDragEnterEvent *event)
 void MainWindow::dropEvent(QDropEvent *event)
 {
     QStringList captures;
-    QString archive;
+    QStringList archives;
     for (const QUrl &url : event->mimeData()->urls()) {
         if (!url.isLocalFile()) {
             continue;
         }
         const QString path = url.toLocalFile();
         if (isArchiveName(path)) {
-            archive = path;
+            archives << path;
         } else {
             captures << path;
         }
     }
-    if (!archive.isEmpty() && !openArchive(archive)) {
-        return;
+    // The first .rfx file dropped on an empty list is opened; the others (and the ones dropped on a list that has tracks) are added to it.
+    QStringList more = archives;
+    if (m_doc.count() == 0 && !more.isEmpty()) {
+        if (!openArchive(more.takeFirst())) {
+            return;
+        }
     }
-    addCaptures(captures);
+    addCaptures(more + captures);
+}
+
+// The tracks of the file that should have their TBC curve (it was asked for) and have not.
+int MainWindow::missingCurves() const
+{
+    if (m_doc.codec() != Codec::Rfx) {
+        return 0;
+    }
+    int missing = 0;
+    for (int i = 0; i < m_doc.count(); ++i) {
+        const Entry &e = m_doc.at(i);
+        if (e.fromArchive && !e.removed && m_pass0Kept.find({e.arch, e.src}) == m_pass0Kept.end()) {
+            ++missing;
+        }
+    }
+    return missing;
+}
+
+// Before quitting: when the TBC curve was asked for and the work was not done for every track (stopped, or not asked for the tracks added since),
+// asks whether to do it now. It is kept in the file as soon as it is worked out, so there is nothing to save.
+bool MainWindow::confirmCurves()
+{
+    const int missing = m_curveWanted ? missingCurves() : 0;
+    if (missing == 0) {
+        return true;
+    }
+    QMessageBox box(QMessageBox::Question, tr("TBC curve"),
+                    tr("The TBC curve was asked for, and %n track(s) of the file do not have it yet. Work it out now?", nullptr, missing),
+                    QMessageBox::Yes | QMessageBox::No | QMessageBox::Cancel, this);
+    box.button(QMessageBox::Yes)->setText(tr("Work it out"));
+    box.button(QMessageBox::No)->setText(tr("Quit without"));
+    switch (box.exec()) {
+    case QMessageBox::Yes:
+        return computePass0(false, std::nullopt) && missingCurves() == 0;
+    case QMessageBox::No:
+        return true;
+    default:
+        return false;
+    }
 }
 
 void MainWindow::closeEvent(QCloseEvent *event)
 {
-    if (confirmDiscard()) {
+    if (confirmDiscard() && confirmCurves()) {
         event->accept();
     } else {
         event->ignore();

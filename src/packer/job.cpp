@@ -10,6 +10,7 @@
 
 #include "job.h"
 #include "rfsync.h"
+#include "verify.h"
 
 #include "capture.h"
 #include "error.h"
@@ -56,14 +57,38 @@ std::vector<rfx::Sidecar> sidecarsFromJson(const QJsonArray &list)
 
 } // namespace
 
+std::vector<QString> jobArchives(const Job &job)
+{
+    std::vector<QString> out;
+    if (!job.archive.isEmpty()) {
+        out.push_back(job.archive);
+        for (const QString &a : job.extraArchives) {
+            out.push_back(a);
+        }
+    }
+    return out;
+}
+
 QByteArray jobToJson(const Job &job)
 {
     QJsonObject root;
     root["archive"] = job.archive;
+    if (!job.extraArchives.isEmpty()) {
+        root["extra_archives"] = QJsonArray::fromStringList(job.extraArchives);
+    }
     root["output"] = job.output;
     root["codec"] = job.codec == Codec::Flac ? "flac" : (job.codec == Codec::Raw ? "raw" : "rfx");
     if (job.pass0Only) {
         root["pass0_only"] = true;
+        if (job.only) {
+            root["only"] = static_cast<double>(*job.only);
+        }
+    }
+    if (job.verify) {
+        root["verify"] = true;
+        if (job.only) {
+            root["only"] = static_cast<double>(*job.only);
+        }
     }
     if (job.unpack) {
         root["unpack"] = true;
@@ -75,6 +100,7 @@ QByteArray jobToJson(const Job &job)
     for (const rfx::Pick &p : job.picks) {
         QJsonObject o;
         o["from_archive"] = p.fromArchive;
+        o["arch"] = static_cast<double>(p.arch);
         o["src"] = static_cast<double>(p.src);
         o["capture"] = p.capture;
         QJsonObject e;
@@ -92,6 +118,24 @@ QByteArray jobToJson(const Job &job)
         }
         if (p.edit.bits) {
             e["bits"] = static_cast<double>(*p.edit.bits);
+        }
+        if (p.edit.info.standard) {
+            e["standard"] = QString::fromStdString(*p.edit.info.standard);
+        }
+        if (p.edit.info.reference) {
+            e["reference"] = QString::fromStdString(*p.edit.info.reference);
+        }
+        if (p.edit.info.copy) {
+            e["copy"] = static_cast<double>(*p.edit.info.copy);
+        }
+        if (p.edit.info.capture) {
+            e["capture"] = static_cast<double>(*p.edit.info.capture);
+        }
+        if (p.edit.info.face) {
+            e["face"] = QString::fromStdString(*p.edit.info.face);
+        }
+        if (p.edit.info.signal) {
+            e["signal"] = QString::fromStdString(*p.edit.info.signal);
         }
         o["edit"] = e;
         picks.append(o);
@@ -123,11 +167,15 @@ Job jobFromJson(const QByteArray &json)
     const QJsonObject root = doc.object();
     Job job;
     job.archive = root["archive"].toString();
+    for (const QJsonValue &v : root["extra_archives"].toArray()) {
+        job.extraArchives << v.toString();
+    }
     job.output = root["output"].toString();
     const QString codec = root["codec"].toString();
     job.codec = codec == QLatin1String("flac") ? Codec::Flac : (codec == QLatin1String("raw") ? Codec::Raw : Codec::Rfx);
     job.unpack = root["unpack"].toBool();
     job.pass0Only = root["pass0_only"].toBool();
+    job.verify = root["verify"].toBool();
     if (root.contains("only")) {
         job.only = static_cast<size_t>(root["only"].toDouble());
     }
@@ -135,7 +183,7 @@ Job jobFromJson(const QByteArray &json)
         const QJsonObject o = v.toObject();
         rfx::Pick p;
         p.fromArchive = o["from_archive"].toBool();
-        p.arch = 0;
+        p.arch = static_cast<size_t>(o["arch"].toDouble());
         p.src = static_cast<size_t>(o["src"].toDouble());
         p.capture = o["capture"].toString();
         const QJsonObject e = o["edit"].toObject();
@@ -153,6 +201,24 @@ Job jobFromJson(const QByteArray &json)
         }
         if (e.contains("bits")) {
             p.edit.bits = static_cast<uint32_t>(e["bits"].toDouble());
+        }
+        if (e.contains("standard")) {
+            p.edit.info.standard = e["standard"].toString().toStdString();
+        }
+        if (e.contains("reference")) {
+            p.edit.info.reference = e["reference"].toString().toStdString();
+        }
+        if (e.contains("copy")) {
+            p.edit.info.copy = static_cast<uint32_t>(e["copy"].toDouble());
+        }
+        if (e.contains("capture")) {
+            p.edit.info.capture = static_cast<uint32_t>(e["capture"].toDouble());
+        }
+        if (e.contains("face")) {
+            p.edit.info.face = e["face"].toString().toStdString();
+        }
+        if (e.contains("signal")) {
+            p.edit.info.signal = e["signal"].toString().toStdString();
         }
         job.picks.push_back(std::move(p));
     }
@@ -179,47 +245,75 @@ namespace {
 std::vector<QString> listAsFiles(const Job &job, const QString &work)
 {
     std::vector<QString> files;
-    std::optional<rfx::Archive> archive;
-    std::vector<rfx::SourceMeta> stored;
-    const bool storedVariant = !job.archive.isEmpty() && rfx::isFlacArchive(job.archive);
+    const std::vector<QString> archives = jobArchives(job);
     for (size_t k = 0; k < job.picks.size(); ++k) {
         const rfx::Pick &p = job.picks[k];
         if (!p.fromArchive) {
             files.push_back(p.capture);
             continue;
         }
+        if (p.arch >= archives.size()) {
+            throw rfx::Error("a track comes from a file that is not in the job");
+        }
+        const QString &path = archives[p.arch];
         const QString dir = work + QStringLiteral("/") + QString::number(k);
         QDir().mkpath(dir);
-        if (storedVariant) {
-            if (stored.empty()) {
-                stored = rfx::readFlacMeta(job.archive);
-            }
-            rfx::unpackFlac(job.archive, dir, p.src, std::nullopt);
+        if (rfx::isFlacArchive(path)) {
+            const std::vector<rfx::SourceMeta> stored = rfx::readFlacMeta(path);
+            rfx::unpackFlac(path, dir, p.src, std::nullopt);
             files.push_back(dir + QStringLiteral("/") + QString::fromStdString(stored[p.src].name));
             continue;
         }
-        if (!archive) {
-            archive.emplace(job.archive);
-        }
+        const rfx::Archive archive(path);
         rfx::UnpackOptions unpack;
         unpack.only = p.src;
         unpack.device = job.options.device;
         unpack.threads = job.options.threads;
-        rfx::unpackArchive(job.archive, dir, unpack);
-        files.push_back(dir + QStringLiteral("/") + QString::fromStdString(archive->meta().sources[p.src].name));
+        rfx::unpackArchive(path, dir, unpack);
+        files.push_back(dir + QStringLiteral("/") + QString::fromStdString(archive.meta().sources[p.src].name));
     }
     return files;
 }
-
 } // namespace
 
 void runJob(const Job &job)
 {
+    if (job.verify) {
+        if (job.archive.isEmpty()) {
+            throw rfx::Error("nothing to check: no .rfx file is open");
+        }
+        const std::vector<rfx::TrackCheck> checks = rfx::verifyArchive(job.archive, job.only, [](double part) {
+            std::fprintf(stderr, "verify: %d%%\r", static_cast<int>(part * 100.0));
+            std::fflush(stderr);
+        });
+        std::fprintf(stderr, "verify: 100%%\n");
+        std::string damaged;
+        size_t intact = 0;
+        size_t unchecked = 0;
+        for (const rfx::TrackCheck &c : checks) {
+            if (!c.ok) {
+                damaged += (damaged.empty() ? "" : "; ") + std::string("track ") + std::to_string(c.track) + " (" + c.name + "): " + c.detail;
+            } else if (!c.checked) {
+                ++unchecked;
+                std::fprintf(stderr, "track %zu (%s): %s\n", c.track, c.name.c_str(), c.detail.c_str());
+            } else {
+                ++intact;
+                std::fprintf(stderr, "track %zu (%s): SHA-256 of the samples matches\n", c.track, c.name.c_str());
+            }
+        }
+        if (!damaged.empty()) {
+            throw rfx::Error("damaged: " + damaged);
+        }
+        std::fprintf(stderr, "all intact: %zu track(s) match their checksum%s\n", intact,
+                     unchecked ? (", " + std::to_string(unchecked) + " with no checksum kept").c_str() : "");
+        return;
+    }
     if (job.pass0Only) {
         if (job.archive.isEmpty()) {
             throw rfx::Error("nothing to work on: no .rfx file is open");
         }
-        rfx::keepPass0(job.archive, job.options.rateMhz, false);
+        // (a track asked for by itself is worked out again; for the whole file, the tracks that have it are left as they are)
+        rfx::keepPass0(job.archive, job.options.rateMhz, !job.only, nullptr, job.only);
         return;
     }
     if (job.unpack) {
@@ -240,7 +334,8 @@ void runJob(const Job &job)
     if (job.picks.empty()) {
         throw rfx::Error("nothing to write: the list has no track");
     }
-    if (job.codec == Codec::Rfx && !job.archive.isEmpty() && rfx::isFlacArchive(job.archive)) {
+    const std::vector<QString> allArchives = jobArchives(job);
+    if (job.codec == Codec::Rfx && !allArchives.empty() && rfx::isFlacArchive(allArchives.front())) {
         // From a FLAC or raw file to the predictor: the tracks come out as captures, which are coded as new ones (the lines are located again).
         const QString work = rfx::withExtension(job.output, QStringLiteral("work"));
         QDir(work).removeRecursively();
@@ -261,10 +356,7 @@ void runJob(const Job &job)
         return;
     }
     if (job.codec == Codec::Rfx) {
-        std::vector<QString> archives;
-        if (!job.archive.isEmpty()) {
-            archives.push_back(job.archive);
-        }
+        const std::vector<QString> &archives = allArchives;
         rfx::assembleArchives(archives, job.picks, job.output, job.options, std::nullopt);
         if (job.options.keepPass0) {
             rfx::keepPass0(job.output, job.options.rateMhz, true);
@@ -272,11 +364,7 @@ void runJob(const Job &job)
         return;
     }
     // The FLAC or the raw variant: the tracks are unpacked and written again, with the name, rate, note, files and bits the list says.
-    std::vector<QString> archives;
-    if (!job.archive.isEmpty()) {
-        archives.push_back(job.archive);
-    }
-    rfx::assembleStored(archives, job.picks, job.output, job.options, job.codec == Codec::Raw ? rfx::StoredCodec::Raw : rfx::StoredCodec::Flac);
+    rfx::assembleStored(allArchives, job.picks, job.output, job.options, job.codec == Codec::Raw ? rfx::StoredCodec::Raw : rfx::StoredCodec::Flac);
 }
 
 void removeJobLeftovers(const QString &output)

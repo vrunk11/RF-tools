@@ -15,6 +15,8 @@
 
 #include <QMainWindow>
 
+#include <map>
+
 class AppearanceMenus;
 class QComboBox;
 class QDoubleSpinBox;
@@ -46,8 +48,15 @@ public:
     bool process(const QString &output = QString(), const rfx::PackOptions *options = nullptr);
     // Give the captures of the opened file back, in a folder (asked unless `folder` is given): the track `only` (its number in the file), or all.
     bool unpack(std::optional<size_t> only, const QString &folder = QString());
+    bool unpackIn(size_t arch, std::optional<size_t> only, const QString &folder = QString());
     // Locate the lines of the tracks of the opened file from their RF and keep them in it (the pass 0 curve), asking first.
-    bool computePass0(bool ask = true);
+    bool computePass0(bool ask = true, std::optional<size_t> only = std::nullopt);
+    bool computePass0In(size_t arch, bool ask, std::optional<size_t> only);
+    // Check the tracks of the opened file (only: the track of the file with that number) against the checksums it keeps, by decoding them. Says what it
+    // found, unless quiet; true when all is as packed.
+    bool verify(std::optional<size_t> only, bool quiet = false);
+    // The same for the track number "only" of the file number "arch" of the list (the files of a list are the one it was opened from, and the ones added).
+    bool verifyIn(size_t arch, std::optional<size_t> only, bool quiet = false);
 
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
@@ -64,6 +73,7 @@ private:
     void newList();
     void chooseArchive();
     void chooseCaptures();
+    void chooseArchiveToAdd();
     bool confirmDiscard();
     void editName(const QString &text);
     void editNotes();
@@ -92,6 +102,28 @@ private:
     QAction *m_infoAction = nullptr;
     QAction *m_unpackAll = nullptr;
     QAction *m_pass0Action = nullptr;
+    QAction *m_verifyAction = nullptr;
+    QPushButton *m_verifyAll = nullptr;
+    QPushButton *m_verifyTrack = nullptr;
+    QPushButton *m_pass0Track = nullptr;
+    // What is said of the disc and the signal, for the track picked.
+    QComboBox *m_standard = nullptr;
+    QLineEdit *m_reference = nullptr;
+    QSpinBox *m_copy = nullptr;
+    QSpinBox *m_capture = nullptr;
+    QComboBox *m_face = nullptr;
+    QPushButton *m_cvbs = nullptr;
+    QPushButton *m_yc = nullptr;
+    void editDisc();
+    // The tracks of the opened file that keep the lines of their pass 0 (their numbers in the file; what it says of them), read when the file is
+    // opened and when it changes.
+    std::map<std::pair<size_t, size_t>, QString> m_pass0Kept;
+    void readPass0State();
+    // The TBC curve was asked for (by the box of the options, or the button) and some tracks of the file do not have it: how many.
+    bool m_curveWanted = false;
+    int missingCurves() const;
+    bool confirmCurves();
+    void updateVerify();
 
     QWidget *m_info = nullptr;
     QLabel *m_infoTitle = nullptr;

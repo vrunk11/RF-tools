@@ -44,35 +44,53 @@ bool sameSidecars(const std::vector<rfx::Sidecar> &a, const std::vector<rfx::Sid
 
 } // namespace
 
+// The tracks of a file as entries: of the predictor, or of the FLAC or raw variant (its tracks take their share of the file).
+std::vector<Entry> Document::entriesOf(const QString &path, size_t arch, bool *stored, std::string *storedCodec, uint32_t *segment) const
+{
+    *stored = rfx::isFlacArchive(path);
+    std::optional<rfx::Archive> archive;
+    std::vector<rfx::SourceMeta> sources;
+    if (*stored) {
+        sources = rfx::readFlacMeta(path, storedCodec);
+        *segment = 0;
+    } else {
+        archive.emplace(path);
+        sources = archive->meta().sources;
+        *segment = static_cast<uint32_t>(archive->meta().segment);
+    }
+    std::vector<Entry> entries;
+    for (size_t k = 0; k < sources.size(); ++k) {
+        Entry e;
+        e.fromArchive = true;
+        e.arch = arch;
+        e.src = k;
+        e.meta = sources[k];
+        e.packed = *stored ? static_cast<uint64_t>(QFileInfo(path).size()) / std::max<size_t>(1, sources.size()) : archive->packedBytes(k);
+        e.name = QString::fromStdString(e.meta.name);
+        e.rateHz = e.meta.rateHz;
+        e.notes = QString::fromStdString(e.meta.notes);
+        e.sidecars = e.meta.sidecars;
+        e.standard = QString::fromStdString(e.meta.standard);
+        e.reference = QString::fromStdString(e.meta.reference);
+        e.copy = static_cast<int>(e.meta.copy);
+        e.captureNumber = static_cast<int>(e.meta.capture);
+        e.face = QString::fromStdString(e.meta.face);
+        e.signal = QString::fromStdString(e.meta.signal);
+        entries.push_back(std::move(e));
+    }
+    return entries;
+}
+
 bool Document::open(const QString &path, QString *error)
 {
     try {
-        // A predictor archive, or an .rfx file of the FLAC or raw variant (its tracks take their share of the file).
-        const bool stored = rfx::isFlacArchive(path);
+        bool stored = false;
         std::string storedCodec;
-        std::optional<rfx::Archive> archive;
-        std::vector<rfx::SourceMeta> sources;
-        if (stored) {
-            sources = rfx::readFlacMeta(path, &storedCodec);
-        } else {
-            archive.emplace(path);
-            sources = archive->meta().sources;
-        }
-        std::vector<Entry> entries;
-        for (size_t k = 0; k < sources.size(); ++k) {
-            Entry e;
-            e.fromArchive = true;
-            e.src = k;
-            e.meta = sources[k];
-            e.packed = stored ? static_cast<uint64_t>(QFileInfo(path).size()) / std::max<size_t>(1, sources.size()) : archive->packedBytes(k);
-            e.name = QString::fromStdString(e.meta.name);
-            e.rateHz = e.meta.rateHz;
-            e.notes = QString::fromStdString(e.meta.notes);
-            e.sidecars = e.meta.sidecars;
-            entries.push_back(std::move(e));
-        }
+        uint32_t segment = 0;
+        std::vector<Entry> entries = entriesOf(path, 0, &stored, &storedCodec, &segment);
         m_entries = std::move(entries);
-        m_archive = path;
+        m_archives = {path};
+        m_opened = true;
         m_codec = stored ? (storedCodec == "raw" ? Codec::Raw : Codec::Flac) : Codec::Rfx;
         m_rateHz = m_entries.empty() ? 0.0 : m_entries.front().meta.rateHz;
         m_bits = m_entries.empty() ? 0 : static_cast<int>(m_entries.front().meta.bits);
@@ -87,6 +105,57 @@ bool Document::open(const QString &path, QString *error)
     return true;
 }
 
+bool Document::addArchive(const QString &path, QString *error)
+{
+    try {
+        if (std::find(m_archives.begin(), m_archives.end(), path) != m_archives.end()) {
+            throw rfx::Error(QFileInfo(path).fileName().toStdString() + " is in the list already");
+        }
+        bool stored = false;
+        std::string storedCodec;
+        uint32_t segment = 0;
+        std::vector<Entry> entries = entriesOf(path, m_archives.size(), &stored, &storedCodec, &segment);
+        if (!m_archives.empty()) {
+            // The files of the list are of one family: tracks of the predictor, with one segment length, or tracks of the FLAC or raw variant.
+            const QString &first = m_archives.front();
+            bool firstStored = false;
+            std::string firstCodec;
+            uint32_t firstSegment = 0;
+            entriesOf(first, 0, &firstStored, &firstCodec, &firstSegment);
+            if (firstStored != stored) {
+                throw rfx::Error("a file of the predictor and a file of the FLAC or raw variant cannot be written together: save the one as the variant of the other first");
+            }
+            if (!stored && firstSegment != segment) {
+                throw rfx::Error("the files do not use the same segment length");
+            }
+        } else {
+            // A new list takes the variant of the file it starts from.
+            m_codec = stored ? (storedCodec == "raw" ? Codec::Raw : Codec::Flac) : Codec::Rfx;
+        }
+        if (m_rateHz <= 0.0 && !entries.empty()) {
+            m_rateHz = entries.front().meta.rateHz;
+            m_bits = static_cast<int>(entries.front().meta.bits);
+        }
+        for (Entry &e : entries) {
+            m_entries.push_back(std::move(e));
+        }
+        m_archives.push_back(path);
+        m_touched = true;
+    } catch (const std::exception &e) {
+        if (error) {
+            *error = QString::fromUtf8(e.what());
+        }
+        return false;
+    }
+    emit changed();
+    return true;
+}
+
+QString Document::archiveOf(int i) const
+{
+    const Entry &e = m_entries[static_cast<size_t>(i)];
+    return e.fromArchive && e.arch < m_archives.size() ? m_archives[e.arch] : QString();
+}
 bool Document::addCapture(const QString &path, QString *error)
 {
     try {
@@ -105,7 +174,7 @@ bool Document::addCapture(const QString &path, QString *error)
         e.meta.sidecars = rfx::findSidecars(path);
         const std::optional<double> hz = rfx::sidecarRateHz(e.meta.sidecars);
         e.meta.rateHz = hz.value_or(0.0);
-        if (m_archive.isEmpty() && m_rateHz <= 0.0 && hz) {
+        if (!m_opened && m_rateHz <= 0.0 && hz) {
             m_rateHz = *hz;
         }
         e.meta.fileTime = info.lastModified().toUTC().toString(Qt::ISODate).toStdString();
@@ -140,7 +209,8 @@ void Document::setFormat(double rateHz, int bits)
 void Document::clear()
 {
     m_entries.clear();
-    m_archive.clear();
+    m_archives.clear();
+    m_opened = false;
     m_rateHz = 0.0;
     m_bits = 0;
     m_codec = Codec::Rfx;
@@ -186,7 +256,9 @@ void Document::touched()
 bool Document::metadataEdited(const Entry &e) const
 {
     return e.name != QString::fromStdString(e.meta.name) || e.notes != QString::fromStdString(e.meta.notes) ||
-           !sameSidecars(e.sidecars, e.meta.sidecars);
+           !sameSidecars(e.sidecars, e.meta.sidecars) || e.standard != QString::fromStdString(e.meta.standard) ||
+           e.reference != QString::fromStdString(e.meta.reference) || e.copy != static_cast<int>(e.meta.copy) || e.captureNumber != static_cast<int>(e.meta.capture) ||
+           e.face != QString::fromStdString(e.meta.face) || e.signal != QString::fromStdString(e.meta.signal);
 }
 
 EntryState Document::state(int i) const
@@ -200,7 +272,7 @@ EntryState Document::state(int i) const
     }
     // A track is predicted from tracks before it: it can be copied as it is only if every one of them is still there, before
     // it. Where the tracks of the archive stand in what is to be written, by their number in the archive:
-    std::vector<std::pair<size_t, int>> where;
+    std::vector<std::pair<std::pair<size_t, size_t>, int>> where;
     int index = 0;
     int mine = -1;
     for (const Entry &other : m_entries) {
@@ -208,7 +280,7 @@ EntryState Document::state(int i) const
             continue;
         }
         if (other.fromArchive) {
-            where.emplace_back(other.src, index);
+            where.emplace_back(std::make_pair(other.arch, other.src), index);
             if (&other == &e) {
                 mine = index;
             }
@@ -216,7 +288,7 @@ EntryState Document::state(int i) const
         ++index;
     }
     for (const size_t r : e.meta.refs) {
-        const auto it = std::find_if(where.begin(), where.end(), [r](const std::pair<size_t, int> &w) { return w.first == r; });
+        const auto it = std::find_if(where.begin(), where.end(), [&e, r](const std::pair<std::pair<size_t, size_t>, int> &w) { return w.first == std::make_pair(e.arch, r); });
         if (it == where.end() || it->second >= mine) {
             return EntryState::Recode;
         }
@@ -241,8 +313,11 @@ Summary Document::summary() const
 
 bool Document::isChanged() const
 {
-    if (m_archive.isEmpty()) {
+    if (!m_opened) {
         return !m_entries.empty();
+    }
+    if (m_archives.size() > 1) {
+        return true;
     }
     if (m_codec != Codec::Rfx) {
         return true;
@@ -262,7 +337,12 @@ bool Document::isChanged() const
 Job Document::toJob(const QString &output, const rfx::PackOptions &options) const
 {
     Job job;
-    job.archive = m_archive;
+    if (!m_archives.empty()) {
+        job.archive = m_archives.front();
+        for (size_t a = 1; a < m_archives.size(); ++a) {
+            job.extraArchives << m_archives[a];
+        }
+    }
     job.output = output;
     job.options = options;
     job.codec = m_codec;
@@ -270,7 +350,7 @@ Job Document::toJob(const QString &output, const rfx::PackOptions &options) cons
         if (e.removed) {
             continue;
         }
-        rfx::Pick p = e.fromArchive ? rfx::Pick::old(0, e.src) : rfx::Pick::fresh(e.capture);
+        rfx::Pick p = e.fromArchive ? rfx::Pick::old(e.arch, e.src) : rfx::Pick::fresh(e.capture);
         if (e.fromArchive) {
             if (e.name != QString::fromStdString(e.meta.name)) {
                 p.edit.name = e.name.toStdString();
@@ -280,6 +360,25 @@ Job Document::toJob(const QString &output, const rfx::PackOptions &options) cons
             }
             if (!sameSidecars(e.sidecars, e.meta.sidecars)) {
                 p.edit.sidecars = e.sidecars;
+            }
+            // (what the person changed of the disc and the signal, and only that)
+            if (e.standard != QString::fromStdString(e.meta.standard)) {
+                p.edit.info.standard = e.standard.toStdString();
+            }
+            if (e.reference != QString::fromStdString(e.meta.reference)) {
+                p.edit.info.reference = e.reference.toStdString();
+            }
+            if (e.copy != static_cast<int>(e.meta.copy)) {
+                p.edit.info.copy = static_cast<uint32_t>(e.copy);
+            }
+            if (e.captureNumber != static_cast<int>(e.meta.capture)) {
+                p.edit.info.capture = static_cast<uint32_t>(e.captureNumber);
+            }
+            if (e.face != QString::fromStdString(e.meta.face)) {
+                p.edit.info.face = e.face.toStdString();
+            }
+            if (e.signal != QString::fromStdString(e.meta.signal)) {
+                p.edit.info.signal = e.signal.toStdString();
             }
         } else {
             if (m_rateHz > 0) {
@@ -292,6 +391,25 @@ Job Document::toJob(const QString &output, const rfx::PackOptions &options) cons
             }
             if (!e.notes.isEmpty()) {
                 p.edit.notes = e.notes.toStdString();
+            }
+            // (a capture that is new has no earlier value: what is said is what it gets)
+            if (!e.standard.isEmpty()) {
+                p.edit.info.standard = e.standard.toStdString();
+            }
+            if (!e.reference.isEmpty()) {
+                p.edit.info.reference = e.reference.toStdString();
+            }
+            if (e.copy > 0) {
+                p.edit.info.copy = static_cast<uint32_t>(e.copy);
+            }
+            if (e.captureNumber > 0) {
+                p.edit.info.capture = static_cast<uint32_t>(e.captureNumber);
+            }
+            if (!e.face.isEmpty()) {
+                p.edit.info.face = e.face.toStdString();
+            }
+            if (!e.signal.isEmpty()) {
+                p.edit.info.signal = e.signal.toStdString();
             }
         }
         job.picks.push_back(std::move(p));

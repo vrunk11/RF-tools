@@ -23,7 +23,8 @@
 struct Entry
 {
     bool fromArchive = false;
-    // The number of the track in the archive.
+    // Which of the files of the list the track is in (0 is the first), and its number in it.
+    size_t arch = 0;
     size_t src = 0;
     // The file, for a capture.
     QString capture;
@@ -38,6 +39,13 @@ struct Entry
     double rateHz = 0.0;
     QString notes;
     std::vector<rfx::Sidecar> sidecars;
+    // What is said of the disc and the signal (see rfx::SourceMeta): empty, and 0, when not said.
+    QString standard;
+    QString reference;
+    int copy = 0;
+    int captureNumber = 0;
+    QString face;
+    QString signal;
 };
 
 enum class EntryState { Kept, Edited, Recode, New, Removed };
@@ -60,6 +68,9 @@ public:
 
     // Load the tracks of an .rfx file (the list starts from them). False, with the reason, when it is not one.
     bool open(const QString &path, QString *error);
+    // Add the tracks of another .rfx file at the end: they are written along with the others, copied as they are where they can be (a file of the
+    // predictor with one of the predictor, a file of the FLAC or raw variant with one of its variant). False, with the reason, when it cannot be.
+    bool addArchive(const QString &path, QString *error);
     // Add a capture at the end. False, with the reason, when its format is not known.
     bool addCapture(const QString &path, QString *error);
     // An empty list, not made from an archive.
@@ -71,10 +82,14 @@ public:
     // that was opened and cannot be changed then; only a new list is told what its captures hold.
     double rateHz() const { return m_rateHz; }
     int bits() const { return m_bits; }
-    bool formatEditable() const { return m_archive.isEmpty(); }
+    bool formatEditable() const { return !m_opened; }
     void setFormat(double rateHz, int bits);
 
-    const QString &archive() const { return m_archive; }
+    // The file the list was opened from (empty for a new list, even when files were added to it), and every file the tracks come from.
+    QString archive() const { return m_opened && !m_archives.empty() ? m_archives.front() : QString(); }
+    const std::vector<QString> &archives() const { return m_archives; }
+    // The file of an entry (empty for a capture).
+    QString archiveOf(int i) const;
     int count() const { return static_cast<int>(m_entries.size()); }
     const Entry &at(int i) const { return m_entries[static_cast<size_t>(i)]; }
     Entry &edit(int i) { return m_entries[static_cast<size_t>(i)]; }
@@ -97,8 +112,11 @@ signals:
 
 private:
     bool metadataEdited(const Entry &e) const;
+    // The entries of a file, for the end of the list.
+    std::vector<Entry> entriesOf(const QString &path, size_t arch, bool *stored, std::string *storedCodec, uint32_t *segment) const;
 
-    QString m_archive;
+    std::vector<QString> m_archives;
+    bool m_opened = false;
     std::vector<Entry> m_entries;
     bool m_touched = false;
     Codec m_codec = Codec::Rfx;
