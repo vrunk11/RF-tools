@@ -34,6 +34,8 @@ struct TrackEdit
     // The bits the samples carry, as the metadata says it.
     std::optional<uint32_t> bits;
     std::optional<std::vector<Sidecar>> sidecars;
+    // The disc and the signal, as a person says them (what is not given is left as it is).
+    InfoEdit info;
     // Code the track again even when it could be copied as it is.
     bool recode = false;
     // The level (1 to 4) it is coded at when it is coded; the options' when not given.

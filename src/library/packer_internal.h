@@ -50,6 +50,7 @@ struct PackSpec
     std::optional<double> rateHz;
     std::optional<std::string> notes;
     std::optional<uint32_t> bits;
+    InfoEdit info;
 
     // Its references and parameters are given, not worked out.
     bool settled() const { return frozen || like.has_value(); }
@@ -70,6 +71,10 @@ struct PreparedPack
 
     ArchiveMeta meta;
     LagTables tables;
+    // Where the lines of each track are, in the order of the tracks, when they were located (they are kept in the archive, with keepPass0).
+    std::vector<std::vector<Field>> fields;
+    bool pal = false;
+    double fieldsRateHz = 0.0;
     std::vector<std::unique_ptr<PosFile>> fileHolders;
     std::vector<PosFile *> files;
     // Raw files made from compressed captures, removed with this.

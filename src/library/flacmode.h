@@ -45,6 +45,7 @@ struct StoredTrackEdit
     std::optional<std::string> fileTime;
     std::optional<uint32_t> bits;
     std::optional<std::vector<Sidecar>> sidecars;
+    InfoEdit info;
 };
 
 // Pack `inputs` (in that order) as tracks of FLAC (or of raw PCM) in `output`; ffmpeg does the FLAC and the Matroska work.
@@ -54,7 +55,8 @@ void packFlac(const std::vector<QString> &inputs, const QString &output, const P
 
 // Write `output` in the variant `codec` from `picks`, in that order: tracks of the archives (of the predictor variant or of the FLAC or
 // raw one, unpacked to be written again) and new captures; what a pick says to change (name, rate, note, files, bits) is changed. What
-// the predictor does (levels, references) does not apply. Throws rfx::Error.
+// the predictor does (levels, references) does not apply. When every pick is a track of a file of the variant that is asked for, with no change of rate, the
+// streams are copied as they are (ffmpeg -c copy: no decoding, no encoding) and only the description of the tracks is written again. Throws rfx::Error.
 void assembleStored(const std::vector<QString> &archives, const std::vector<Pick> &picks, const QString &output, const PackOptions &options, StoredCodec codec);
 
 // What `rfx info` prints for such a file, and the whole metadata as YAML.

@@ -11,6 +11,7 @@
 #pragma once
 
 #include "device.h"
+#include "metadata.h"
 
 #include <QString>
 
@@ -46,10 +47,13 @@ struct PackOptions
     // Run ld-decode (`ldDecode`) for pass 0, as the first versions did, instead of locating the lines in the process (rfsync.h), which gives
     // the same positions.
     bool externalPass0 = false;
-    // Locate the lines of every track from its RF once the archive is written and keep them in it (keepPass0, rfsync.h): the speed of the
-    // disc and the time base correction are then there without the minutes of work each time. Done by the program that asks, not by
-    // packCaptures.
+    // Keep the lines of every track (pass 0, located from its RF) in the archive that is written, as a block at its end: the speed of the disc and
+    // the time base correction are then there for the programs that read it, without the minutes of work each time. The tracks copied from an
+    // archive that has them carry them over whatever this says; the lines of the others are located here (with this) (the ones located for the lag tables are used as they are).
+    // keepPass0 of rfsync.h does the same for a file as it is.
     bool keepPass0 = false;
+    // The disc and the signal said of every capture that is packed (see InfoEdit).
+    InfoEdit info;
     // The captures are of a PAL disc (NTSC when not).
     bool pal = false;
     // Capture sample rate in MHz, for pass 0 and for the metadata when the

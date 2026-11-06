@@ -28,6 +28,7 @@ add_library(rfx-library STATIC
     segment.cpp
     sha256.cpp
     trackreader.cpp
+    verify.cpp
     yaml.cpp)
 
 target_include_directories(rfx-library PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

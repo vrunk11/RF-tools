@@ -16,6 +16,7 @@
 
 #include <atomic>
 #include <functional>
+#include <optional>
 #include <cstddef>
 #include <vector>
 
@@ -43,9 +44,10 @@ double nominalLineSamples(double fs, VideoSystem system);
 // Locate the lines of the tracks of an archive from their RF and keep what is found in the archive (specification 3.1: a block added at the
 // end of the file, nothing else rewritten), from which the speed of the disc and the time base correction are made. The tracks are worked on
 // together, so that what they are coded against is decoded once. NTSC is tried first, then PAL. With onlyMissing, the tracks the archive
-// already has the lines of are left as they are. allbackRateMhz is the rate of a track that has none. Progress goes to stderr as `pass 0`.
-// Returns the number of tracks that were done. Throws rfx::Error.
-size_t keepPass0(const QString &archive, double fallbackRateMhz, bool onlyMissing, const std::atomic<bool> *stop = nullptr);
+// already has the lines of are left as they are. `fallbackRateMhz` is the rate of a track that has none. Progress goes to stderr as `pass 0`.
+// 	rack: that one only (the lines of the others, kept already, are left as they are). Returns the number of tracks that were done. Throws rfx::Error.
+size_t keepPass0(const QString &archive, double fallbackRateMhz, bool onlyMissing, const std::atomic<bool> *stop = nullptr,
+                 std::optional<size_t> track = std::nullopt);
 
 // A pass 0 dump of the fields, as ld-decode writes it (`LD_DUMP_PASS0`), exact to the bit: for tests, and to look at.
 std::string formatPass0(const std::vector<Field> &fields);

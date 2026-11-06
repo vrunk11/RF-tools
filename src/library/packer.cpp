@@ -302,7 +302,8 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
         needTables = needTables || !specs[k].settled();
     }
     std::vector<std::vector<Field>> fields;
-    if (inputs.size() > 1 && needTables) {
+    double fieldsRate = o.rateMhz * 1e6;
+    if ((inputs.size() > 1 && needTables) || o.keepPass0) {
         fields.resize(inputs.size());
         if (o.pass0Dir || o.externalPass0) {
             // Dumps already made, or made by ld-decode.
@@ -311,7 +312,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
                 dir = *o.pass0Dir;
             } else {
                 dir = withExtension(output, QStringLiteral("pass0"));
-                std::fprintf(stderr, "locating the lines of every capture (ld-decode pass 0)\n");
+                std::fprintf(stderr, "working out the TBC curve of every capture (ld-decode pass 0)\n");
                 if (std::any_of(fmts.begin(), fmts.end(), [&](SampleFormat f) { return f != fmts[0]; })) {
                     throw Error("the captures are not all in one format: the pass 0 of ld-decode takes one");
                 }
@@ -322,6 +323,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
                     hz = sidecarRateHz(findSidecars(given[0]));
                 }
                 runPass0(o.ldDecode, inputs, hz ? *hz / 1e6 : o.rateMhz, formatName(fmts[0]), dir);
+                fieldsRate = hz ? *hz : o.rateMhz * 1e6;
             }
             phase("pass 0 directory ready");
             for (size_t i = 0; i < inputs.size(); ++i) {
@@ -330,7 +332,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
             phase("pass 0 parsed");
         } else {
             // The lines are located here, from the RF of each capture, with the same results as ld-decode's pass 0.
-            std::fprintf(stderr, "locating the lines of every capture (pass 0)\n");
+            std::fprintf(stderr, "working out the TBC curve of every capture (pass 0)\n");
             std::optional<double> hz;
             if (specs[0].carry && specs[0].carry->rateHz > 0) {
                 hz = specs[0].carry->rateHz;
@@ -338,6 +340,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
                 hz = sidecarRateHz(findSidecars(given[0]));
             }
             const double fs = hz ? *hz : o.rateMhz * 1e6;
+            fieldsRate = fs;
             for (size_t i = 0; i < inputs.size(); ++i) {
                 CaptureSpec capture;
                 capture.format = fmts[i];
@@ -510,6 +513,17 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
         if (places[k].bits) {
             sm.bits = *places[k].bits;
         }
+        // What was said of the disc goes with the track too; for a capture that is new it is what the options and the edit say.
+        if (const SourceMeta *from = carry ? &*carry : (places[k].like ? &*places[k].like : nullptr)) {
+            sm.standard = from->standard;
+            sm.reference = from->reference;
+            sm.copy = from->copy;
+            sm.face = from->face;
+            sm.signal = from->signal;
+        } else {
+            sm.apply(o.info);
+        }
+        sm.apply(places[k].info);
         // The note and the date of the file go with the track; a capture that is new gets the date of its file.
         if (carry) {
             sm.notes = carry->notes;
@@ -596,6 +610,9 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
         }
     }
     phase("references chosen");
+    prepared->fields = std::move(fields);
+    prepared->pal = o.pal;
+    prepared->fieldsRateHz = fieldsRate;
     return prepared;
 }
 
@@ -610,6 +627,28 @@ std::vector<PackedTrack> writePrepared(PreparedPack &prepared, const QString &ou
         throw Error("creating " + output.toStdString() + ": " + out.errorString().toStdString());
     }
     writeArchiveHead(out, meta, prepared.tables);
+    // The lines of each track are added at the end: those a track copied from an archive already has are carried over (always: copying a track does
+    // not lose them), and with keepPass0 the others, where they were located.
+    const auto keepLines = [&] {
+        std::map<size_t, SavedPass0> found;
+        for (size_t k = 0; k < meta.sources.size(); ++k) {
+            if (k < copy.size() && copy[k]) {
+                const auto carried = copy[k]->archive->pass0().find(copy[k]->track);
+                if (carried != copy[k]->archive->pass0().end()) {
+                    found[k] = carried->second;
+                    continue;
+                }
+            }
+            if (o.keepPass0 && k < prepared.fields.size()
+                && std::any_of(prepared.fields[k].begin(), prepared.fields[k].end(), [](const Field &f) { return f.lines.size() >= 20; })) {
+                found[k] = SavedPass0{prepared.pal, meta.sources[k].rateHz > 0 ? meta.sources[k].rateHz : prepared.fieldsRateHz, prepared.fields[k]};
+            }
+        }
+        if (!found.empty()) {
+            out.close();
+            savePass0(output, found);
+        }
+    };
     const ReferenceWindows windows(files, meta, prepared.tables);
     std::vector<PackedTrack> report;
     const size_t s = meta.segment;
@@ -670,6 +709,7 @@ std::vector<PackedTrack> writePrepared(PreparedPack &prepared, const QString &ou
         if (!out.flush()) {
             throw Error("cannot write " + output.toStdString() + ": " + out.errorString().toStdString());
         }
+        keepLines();
         return done;
     }
     for (size_t k = 0; k < meta.sources.size(); ++k) {
@@ -729,6 +769,7 @@ std::vector<PackedTrack> writePrepared(PreparedPack &prepared, const QString &ou
     if (!out.flush()) {
         throw Error("cannot write " + output.toStdString() + ": " + out.errorString().toStdString());
     }
+    keepLines();
     return report;
 }
 

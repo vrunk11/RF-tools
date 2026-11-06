@@ -215,6 +215,13 @@ std::string archiveInfo(const QString &path)
         }
         side += "]";
         out += format("     on the command line: %zu%s  sidecars %s\n", sm.position, noise.c_str(), side.c_str());
+        if (sm.hasInfo()) {
+            out += "     disc: " + describeInfo(sm) + "\n";
+        }
+        const auto lines = a.pass0().find(k);
+        if (lines != a.pass0().end()) {
+            out += format("     TBC curve kept: %s, %zu fields (pass 0)\n", lines->second.pal ? "PAL" : "NTSC", lines->second.fields.size());
+        }
     }
     return out;
 }
@@ -267,6 +274,24 @@ std::string archiveYaml(const QString &path)
         }
         if (sm.fileTime) {
             t.set("file_time", Node::string(*sm.fileTime));
+        }
+        if (!sm.standard.empty()) {
+            t.set("standard", Node::string(sm.standard));
+        }
+        if (!sm.reference.empty()) {
+            t.set("reference", Node::string(sm.reference));
+        }
+        if (sm.copy > 0) {
+            t.set("copy", Node::unsignedInteger(sm.copy));
+        }
+        if (sm.capture > 0) {
+            t.set("capture", Node::unsignedInteger(sm.capture));
+        }
+        if (!sm.face.empty()) {
+            t.set("face", Node::string(sm.face));
+        }
+        if (!sm.signal.empty()) {
+            t.set("signal", Node::string(sm.signal));
         }
         t.set("track", Node::unsignedInteger(k));
         t.set("packed_bytes", Node::unsignedInteger(packed));
@@ -475,7 +500,7 @@ void savePass0(const QString &path, const std::map<size_t, SavedPass0> &tracks)
         for (const Field &f : entry.second.fields) {
             QJsonArray lines;
             for (const double x : f.lines) {
-                lines.append(std::round(x * 100.0) / 100.0);
+                lines.append(x);   // (as it is, to the bit: a decoder that takes the lines from the file gets what it would have located)
             }
             QJsonObject fo{{QLatin1String("first"), f.first ? 1 : 0}, {QLatin1String("lines"), lines}};
             if (f.code) {
@@ -494,7 +519,7 @@ void savePass0(const QString &path, const std::map<size_t, SavedPass0> &tracks)
         throw Error(path.toStdString() + ": cannot be written: " + file.errorString().toStdString());
     }
     if (file.write(reinterpret_cast<const char *>(block.data()), static_cast<qint64>(block.size())) != static_cast<qint64>(block.size()) || !file.flush()) {
-        throw Error(path.toStdString() + ": the pass 0 data could not be written: " + file.errorString().toStdString());
+        throw Error(path.toStdString() + ": the TBC curve could not be written: " + file.errorString().toStdString());
     }
 }
 

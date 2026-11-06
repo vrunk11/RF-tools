@@ -218,6 +218,7 @@ void packFlac(const std::vector<QString> &inputs, const QString &output, const P
             if (edit->sidecars) {
                 sm.sidecars = *edit->sidecars;
             }
+            sm.apply(edit->info);
         }
         if (inputs[i] != p) {
             sm.origin = QFileInfo(inputs[i]).fileName().toStdString();
@@ -298,6 +299,9 @@ std::string flacInfo(const QString &path)
             side += (i ? ", " : "") + jsonQuote(sm.sidecars[i].name);
         }
         out += QString::asprintf("     on the command line: %zu  sidecars %s]\n", sm.position, side.c_str()).toStdString();
+        if (sm.hasInfo()) {
+            out += "     disc: " + describeInfo(sm) + "\n";
+        }
     }
     return out;
 }
@@ -335,6 +339,24 @@ std::string flacYaml(const QString &path)
                 e.set("text", Node::string(text.toStdString()));
             }
             sidecars.push(e);
+        }
+        if (!sm.standard.empty()) {
+            t.set("standard", Node::string(sm.standard));
+        }
+        if (!sm.reference.empty()) {
+            t.set("reference", Node::string(sm.reference));
+        }
+        if (sm.copy > 0) {
+            t.set("copy", Node::unsignedInteger(sm.copy));
+        }
+        if (sm.capture > 0) {
+            t.set("capture", Node::unsignedInteger(sm.capture));
+        }
+        if (!sm.face.empty()) {
+            t.set("face", Node::string(sm.face));
+        }
+        if (!sm.signal.empty()) {
+            t.set("signal", Node::string(sm.signal));
         }
         t.set("sidecars", sidecars);
         list.push(t);
@@ -452,14 +474,105 @@ void assembleStored(const std::vector<QString> &archives, const std::vector<Pick
     struct Source
     {
         bool stored = false;
+        std::string codecName;
         std::vector<SourceMeta> tracks;
     };
     std::vector<Source> sources;
     for (const QString &a : archives) {
         Source s;
         s.stored = isFlacArchive(a);
-        s.tracks = s.stored ? readFlacMeta(a) : Archive(a).meta().sources;
+        s.tracks = s.stored ? readFlacMeta(a, &s.codecName) : Archive(a).meta().sources;
         sources.push_back(std::move(s));
+    }
+    // Tracks of files of the variant that is asked for, and nothing else: the streams are copied as they are (no decoding, no encoding), and
+    // only the description of the tracks (rfx.json) is written again, with what the picks change (name, note, files, bits).
+    {
+        const char *const wanted = codec == StoredCodec::Raw ? "raw" : "flac";
+        bool copyable = true;
+        for (const Pick &p : picks) {
+            if (!p.fromArchive || p.arch >= sources.size() || !sources[p.arch].stored || sources[p.arch].codecName != wanted) {
+                copyable = false;
+                break;
+            }
+            // (a rate that is told otherwise is in the header of the stream: that one is made by encoding)
+            if (p.src < sources[p.arch].tracks.size() && p.edit.rateHz && std::llround(*p.edit.rateHz / 1000.0) != std::llround(sources[p.arch].tracks[p.src].rateHz / 1000.0)) {
+                copyable = false;
+                break;
+            }
+        }
+        if (copyable) {
+            std::vector<SourceMeta> tracks;
+            std::vector<size_t> inputOf(sources.size(), static_cast<size_t>(-1));
+            std::vector<size_t> used;
+            QStringList args = {"-v", "error", "-y"};
+            for (size_t k = 0; k < picks.size(); ++k) {
+                const Pick &p = picks[k];
+                if (p.src >= sources[p.arch].tracks.size()) {
+                    throw Error("no track " + std::to_string(p.src) + " in archive " + std::to_string(p.arch));
+                }
+                SourceMeta m = sources[p.arch].tracks[p.src];
+                if (p.edit.name) {
+                    m.name = *p.edit.name;
+                }
+                if (p.edit.notes) {
+                    m.notes = *p.edit.notes;
+                }
+                if (p.edit.bits) {
+                    m.bits = *p.edit.bits;
+                }
+                if (p.edit.sidecars) {
+                    m.sidecars = *p.edit.sidecars;
+                }
+                m.apply(p.edit.info);
+                m.position = k;
+                for (const SourceMeta &other : tracks) {
+                    if (other.name == m.name) {
+                        throw Error("two tracks are named " + m.name + ": the archive keeps file names only");
+                    }
+                }
+                tracks.push_back(std::move(m));
+                if (inputOf[p.arch] == static_cast<size_t>(-1)) {
+                    inputOf[p.arch] = used.size();
+                    used.push_back(p.arch);
+                    args << "-i" << archives[p.arch];
+                }
+            }
+            for (size_t k = 0; k < picks.size(); ++k) {
+                args << "-map" << QStringLiteral("%1:a:%2").arg(static_cast<qulonglong>(inputOf[picks[k].arch])).arg(static_cast<qulonglong>(picks[k].src));
+            }
+            args << "-c" << "copy" << "-map_metadata" << "-1";
+            for (size_t i = 0; i < tracks.size(); ++i) {
+                args << QStringLiteral("-metadata:s:a:%1").arg(static_cast<qulonglong>(i)) << QStringLiteral("title=%1").arg(QString::fromStdString(tracks[i].name));
+            }
+            const QString tmp = withExtension(output, QStringLiteral("rfx-tmp"));
+            const QString dir = withExtension(output, QStringLiteral("stored-work"));
+            QDir(dir).removeRecursively();
+            QDir().mkpath(dir);
+            struct Remove
+            {
+                QString dir;
+                ~Remove() { QDir(dir).removeRecursively(); }
+            } remove{dir};
+            const QString json = QDir(dir).filePath(QStringLiteral("rfx.json"));
+            const std::vector<uint8_t> metaBytes = serializeFlacMeta(tracks, wanted);
+            writeText(json, std::string(metaBytes.begin(), metaBytes.end()));
+            args << "-attach" << json << "-metadata:s:t:0" << "mimetype=application/json" << "-metadata:s:t:0" << "filename=rfx.json" << "-f" << "matroska" << tmp;
+            std::fprintf(stderr, "%zu track(s) copied as they are, no decoding and no encoding\n", tracks.size());
+            try {
+                runFfmpeg(args, "ffmpeg could not write " + output.toStdString());
+            } catch (...) {
+                QFile::remove(tmp);
+                throw;
+            }
+            if (QFile::exists(output) && !QFile::remove(output)) {
+                QFile::remove(tmp);
+                throw Error("cannot replace " + output.toStdString());
+            }
+            if (!QFile::rename(tmp, output)) {
+                throw Error("writing " + output.toStdString());
+            }
+            return;
+        }
     }
     const QString work = withExtension(output, QStringLiteral("stored-work"));
     QDir(work).removeRecursively();
@@ -482,6 +595,7 @@ void assembleStored(const std::vector<QString> &archives, const std::vector<Pick
             e.rateHz = p.edit.rateHz;
             e.notes = p.edit.notes;
             e.bits = p.edit.bits;
+            e.info = p.edit.info;
             edits.push_back(std::move(e));
             same = false;
             continue;
@@ -516,6 +630,8 @@ void assembleStored(const std::vector<QString> &archives, const std::vector<Pick
             e.bits = sm.bits;
         }
         e.sidecars = p.edit.sidecars ? p.edit.sidecars : std::optional<std::vector<Sidecar>>(sm.sidecars);
+        e.info = InfoEdit::of(sm);
+        e.info.overlay(p.edit.info);
         edits.push_back(std::move(e));
         if (format.empty()) {
             format = sm.fmt;

@@ -25,6 +25,20 @@ namespace rfx {
 
 namespace {
 
+bool oneOf(const std::string &text, const char *const *values, size_t count, bool lower, std::string &out)
+{
+    std::string t = text;
+    std::transform(t.begin(), t.end(), t.begin(), [lower](unsigned char c) { return static_cast<char>(lower ? std::tolower(c) : std::toupper(c)); });
+    for (size_t i = 0; i < count; ++i) {
+        std::string v = values[i];
+        if (v == t || (!lower && v == t)) {
+            out = values[i];
+            return true;
+        }
+    }
+    return false;
+}
+
 [[noreturn]] void bad(const std::string &what)
 {
     throw Error("bad metadata: " + what);
@@ -156,6 +170,22 @@ SourceMeta parseSource(const QJsonObject &o)
     if (bits.isDouble() && bits.toDouble() > 0) {
         s.bits = static_cast<uint32_t>(bits.toDouble());
     }
+    const auto text = [&o](const char *key) {
+        const QJsonValue v = field(o, key, false);
+        return v.isString() ? v.toString().toStdString() : std::string();
+    };
+    s.standard = text("standard");
+    s.reference = text("reference");
+    s.face = text("face");
+    s.signal = text("signal");
+    const QJsonValue captureNumber = field(o, "capture", false);
+    if (captureNumber.isDouble() && captureNumber.toDouble() > 0) {
+        s.capture = static_cast<uint32_t>(captureNumber.toDouble());
+    }
+    const QJsonValue copy = field(o, "copy", false);
+    if (copy.isDouble() && copy.toDouble() > 0) {
+        s.copy = static_cast<uint32_t>(copy.toDouble());
+    }
     const QJsonValue fileTime = field(o, "file_time", false);
     if (fileTime.isString()) {
         s.fileTime = fileTime.toString().toStdString();
@@ -224,6 +254,24 @@ void putSource(std::string &out, const SourceMeta &s)
     }
     if (s.fileTime) {
         out += ",\"file_time\":" + jsonQuote(*s.fileTime);
+    }
+    if (!s.standard.empty()) {
+        out += ",\"standard\":" + jsonQuote(s.standard);
+    }
+    if (!s.reference.empty()) {
+        out += ",\"reference\":" + jsonQuote(s.reference);
+    }
+    if (s.copy > 0) {
+        out += ",\"copy\":" + std::to_string(s.copy);
+    }
+    if (s.capture > 0) {
+        out += ",\"capture\":" + std::to_string(s.capture);
+    }
+    if (!s.face.empty()) {
+        out += ",\"face\":" + jsonQuote(s.face);
+    }
+    if (!s.signal.empty()) {
+        out += ",\"signal\":" + jsonQuote(s.signal);
     }
     out += '}';
 }
@@ -398,4 +446,107 @@ std::string toHex(const uint8_t *bytes, size_t size)
     return out;
 }
 
+bool parseStandard(const std::string &text, std::string &out)
+{
+    return oneOf(text, kStandards, sizeof(kStandards) / sizeof(kStandards[0]), true, out);
+}
+
+bool parseFace(const std::string &text, std::string &out)
+{
+    return oneOf(text, kFaces, sizeof(kFaces) / sizeof(kFaces[0]), false, out);
+}
+
+bool parseSignal(const std::string &text, std::string &out)
+{
+    // ("Y/C" and "YC" are the same)
+    std::string t;
+    for (const char c : text) {
+        if (c != '/' && c != '-' && c != ' ') {
+            t += c;
+        }
+    }
+    return oneOf(t, kSignals, sizeof(kSignals) / sizeof(kSignals[0]), true, out);
+}
+
+std::string describeInfo(const SourceMeta &sm)
+{
+    std::string out;
+    const auto add = [&out](const std::string &name, const std::string &value) {
+        out += (out.empty() ? "" : ", ") + name + " " + value;
+    };
+    if (!sm.standard.empty()) {
+        add("standard", sm.standard);
+    }
+    if (!sm.reference.empty()) {
+        add("reference", jsonQuote(sm.reference));
+    }
+    if (sm.copy > 0) {
+        add("disc copy", std::to_string(sm.copy));
+    }
+    if (sm.capture > 0) {
+        add("capture", std::to_string(sm.capture));
+    }
+    if (!sm.face.empty()) {
+        add("face", sm.face);
+    }
+    if (!sm.signal.empty()) {
+        add("signal", sm.signal == "yc" ? "Y/C" : "CVBS");
+    }
+    return out;
+}
+void InfoEdit::overlay(const InfoEdit &over)
+{
+    if (over.standard) {
+        standard = over.standard;
+    }
+    if (over.reference) {
+        reference = over.reference;
+    }
+    if (over.copy) {
+        copy = over.copy;
+    }
+    if (over.capture) {
+        capture = over.capture;
+    }
+    if (over.face) {
+        face = over.face;
+    }
+    if (over.signal) {
+        signal = over.signal;
+    }
+}
+
+InfoEdit InfoEdit::of(const SourceMeta &sm)
+{
+    InfoEdit e;
+    e.standard = sm.standard;
+    e.reference = sm.reference;
+    e.copy = sm.copy;
+    e.capture = sm.capture;
+    e.face = sm.face;
+    e.signal = sm.signal;
+    return e;
+}
+
+void SourceMeta::apply(const InfoEdit &edit)
+{
+    if (edit.standard) {
+        standard = *edit.standard;
+    }
+    if (edit.reference) {
+        reference = *edit.reference;
+    }
+    if (edit.copy) {
+        copy = *edit.copy;
+    }
+    if (edit.capture) {
+        capture = *edit.capture;
+    }
+    if (edit.face) {
+        face = *edit.face;
+    }
+    if (edit.signal) {
+        signal = *edit.signal;
+    }
+}
 } // namespace rfx

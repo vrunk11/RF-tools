@@ -9,6 +9,7 @@
  ******************************************************************************/
 
 #include "edit.h"
+#include "rfsync.h"
 
 #include "archive.h"
 #include "capture.h"
@@ -118,6 +119,7 @@ void assembleArchives(const std::vector<QString> &archives, const std::vector<Pi
             fresh.rateHz = p.edit.rateHz;
             fresh.notes = p.edit.notes;
             fresh.bits = p.edit.bits;
+            fresh.info = p.edit.info;
             specs.push_back(fresh);
             copy.emplace_back();
             continue;
@@ -140,6 +142,7 @@ void assembleArchives(const std::vector<QString> &archives, const std::vector<Pi
         if (p.edit.sidecars) {
             sm.sidecars = *p.edit.sidecars;
         }
+        sm.apply(p.edit.info);
         std::vector<size_t> moved;
         bool allMoved = true;
         for (const size_t j : sm.refs) {
@@ -198,6 +201,21 @@ void assembleArchives(const std::vector<QString> &archives, const std::vector<Pi
             }
             if (!out.flush()) {
                 throw Error("cannot write " + tmp.toStdString());
+            }
+            out.close();
+            // The lines of pass 0 the tracks have in their files go with them (and, asked for, those of the tracks that have none are located).
+            std::map<size_t, SavedPass0> carried;
+            for (size_t k = 0; k < copy.size(); ++k) {
+                const auto lines = copy[k]->archive->pass0().find(copy[k]->track);
+                if (lines != copy[k]->archive->pass0().end()) {
+                    carried[k] = lines->second;
+                }
+            }
+            if (!carried.empty()) {
+                savePass0(tmp, carried);
+            }
+            if (o.keepPass0) {
+                keepPass0(tmp, o.rateMhz, true);
             }
         } else {
             // Coding needed: the archives' tracks become raw files to read the

@@ -960,7 +960,7 @@ Fine refine(const std::vector<float> &x, double s, const Fir &fir, double fs, bo
 std::vector<Field> locateFields(TrackReader &reader, size_t track, double fs, VideoSystem video, unsigned threads, const std::atomic<bool> *stop, const std::function<void(double)> &progress)
 {
     if (!(fs > 0.0)) {
-        throw Error("pass 0 needs the sample rate of the capture");
+        throw Error("the TBC curve (pass 0) needs the sample rate of the capture");
     }
     if (threads == 0) {
         threads = defaultThreads();
@@ -1076,13 +1076,16 @@ double nominalLineSamples(double fs, VideoSystem system)
     return fs * (system == VideoSystem::Pal ? pal() : ntsc()).lineUs / 1e6;
 }
 
-size_t keepPass0(const QString &archive, double fallbackRateMhz, bool onlyMissing, const std::atomic<bool> *stop)
+size_t keepPass0(const QString &archive, double fallbackRateMhz, bool onlyMissing, const std::atomic<bool> *stop, std::optional<size_t> track)
 {
     TrackReader reader(archive);
     if (!reader.keepsSpeed()) {
-        throw Error(archive.toStdString() + ": only a predictor archive can keep the lines of pass 0");
+        throw Error(archive.toStdString() + ": only a predictor archive can keep a TBC curve");
     }
     const size_t count = reader.meta().sources.size();
+    if (track && *track >= count) {
+        throw Error(archive.toStdString() + ": the archive has " + std::to_string(count) + " tracks");
+    }
     std::map<size_t, SavedPass0> found;
     // What the archive has already is kept as it is.
     std::vector<size_t> todo;
@@ -1091,7 +1094,7 @@ size_t keepPass0(const QString &archive, double fallbackRateMhz, bool onlyMissin
         if (have) {
             found[k] = *have;
         }
-        if (!have || !onlyMissing) {
+        if ((!have || !onlyMissing) && (!track || *track == k)) {
             todo.push_back(k);
         }
     }
@@ -1111,7 +1114,7 @@ size_t keepPass0(const QString &archive, double fallbackRateMhz, bool onlyMissin
         std::fprintf(stderr, "pass 0 [%zu/%zu] curve: %d%%%c", finished, todo.size(), mean, last ? '\n' : '\r');
         std::fflush(stderr);
     };
-    std::fprintf(stderr, "locating the lines of %zu track(s) (pass 0)\n", todo.size());
+    std::fprintf(stderr, "working out the TBC curve of %zu track(s) (pass 0)\n", todo.size());
     std::vector<std::thread> workers;
     for (const size_t k : todo) {
         workers.emplace_back([&, k] {
