@@ -197,6 +197,7 @@ std::string archiveInfo(const QString &path)
     Archive a(path);
     const ArchiveMeta &m = a.meta();
     std::string out = format("%s: %zu tracks, segments of %zu samples\n", path.toStdString().c_str(), m.sources.size(), m.segment);
+    out += "  source: " + mediumName(m.medium) + "\n";
     for (size_t k = 0; k < m.sources.size(); ++k) {
         const SourceMeta &sm = m.sources[k];
         const uint64_t packed = a.packedBytes(k);
@@ -328,6 +329,9 @@ std::string archiveYaml(const QString &path)
     doc.set("format", Node::string(m.format));
     doc.set("version", Node::unsignedInteger(m.version));
     doc.set("segment", Node::unsignedInteger(m.segment));
+    if (!m.medium.empty()) {
+        doc.set("medium", Node::string(m.medium));
+    }
     doc.set("tracks", tracks);
     std::string out;
     doc.writeYaml(0, out);

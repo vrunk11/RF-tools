@@ -25,6 +25,7 @@
 #include <QLocale>
 
 #include <algorithm>
+#include <set>
 #include <cmath>
 #include <cstdio>
 
@@ -128,7 +129,7 @@ bool isFlacArchive(const QString &path)
     return head.contains("matroska");
 }
 
-std::vector<SourceMeta> readFlacMeta(const QString &path, std::string *codec)
+std::vector<SourceMeta> readFlacMeta(const QString &path, std::string *codec, std::string *medium)
 {
     PosFile file(path, PosFile::Mode::Read);
     const ebml::Index idx = ebml::scan(file, std::nullopt);
@@ -136,7 +137,7 @@ std::vector<SourceMeta> readFlacMeta(const QString &path, std::string *codec)
         if (a.name == kAttachmentName) {
             std::vector<uint8_t> buf(static_cast<size_t>(a.len));
             file.readAt(buf.data(), buf.size(), a.off);
-            return parseFlacMeta(buf.data(), buf.size(), codec);
+            return parseFlacMeta(buf.data(), buf.size(), codec, medium);
         }
     }
     throw Error(path.toStdString() + ": no rfx.json attachment (not an rfx archive)");
@@ -240,7 +241,7 @@ void packFlac(const std::vector<QString> &inputs, const QString &output, const P
         tracks.push_back(std::move(sm));
     }
     const QString json = QDir(work).filePath(QStringLiteral("rfx.json"));
-    const std::vector<uint8_t> metaBytes = serializeFlacMeta(tracks, rawPcm ? "raw" : "flac");
+    const std::vector<uint8_t> metaBytes = serializeFlacMeta(tracks, rawPcm ? "raw" : "flac", o.medium.value_or(std::string()));
     writeText(json, std::string(metaBytes.begin(), metaBytes.end()));
     const QString tmp = withExtension(output, QStringLiteral("rfx-tmp"));
     QStringList args = {"-v", "error", "-y"};
@@ -286,8 +287,10 @@ void packFlac(const std::vector<QString> &inputs, const QString &output, const P
 std::string flacInfo(const QString &path)
 {
     std::string codec;
-    const std::vector<SourceMeta> tracks = readFlacMeta(path, &codec);
+    std::string medium;
+    const std::vector<SourceMeta> tracks = readFlacMeta(path, &codec, &medium);
     std::string out = QString::asprintf("%s: %zu tracks, %s\n", path.toStdString().c_str(), tracks.size(), codec == "raw" ? "raw PCM" : "FLAC").toStdString();
+    out += "  source: " + mediumName(medium) + "\n";
     for (size_t k = 0; k < tracks.size(); ++k) {
         const SourceMeta &sm = tracks[k];
         out += QString::asprintf("  %zu: %s  %llu bytes  %llu samples at %s Hz  format %s\n", k, sm.name.c_str(), static_cast<unsigned long long>(sm.size),
@@ -309,7 +312,8 @@ std::string flacInfo(const QString &path)
 std::string flacYaml(const QString &path)
 {
     std::string codec;
-    const std::vector<SourceMeta> tracks = readFlacMeta(path, &codec);
+    std::string medium;
+    const std::vector<SourceMeta> tracks = readFlacMeta(path, &codec, &medium);
     Node list = Node::array();
     for (size_t k = 0; k < tracks.size(); ++k) {
         const SourceMeta &sm = tracks[k];
@@ -365,6 +369,9 @@ std::string flacYaml(const QString &path)
     doc.set("format", Node::string(kFormatName));
     doc.set("codec", Node::string(codec));
     doc.set("version", Node::unsignedInteger(kFormatVersion));
+    if (!medium.empty()) {
+        doc.set("medium", Node::string(medium));
+    }
     doc.set("tracks", list);
     std::string out;
     doc.writeYaml(0, out);
@@ -475,14 +482,35 @@ void assembleStored(const std::vector<QString> &archives, const std::vector<Pick
     {
         bool stored = false;
         std::string codecName;
+        std::string medium;
         std::vector<SourceMeta> tracks;
     };
     std::vector<Source> sources;
     for (const QString &a : archives) {
         Source s;
         s.stored = isFlacArchive(a);
-        s.tracks = s.stored ? readFlacMeta(a, &s.codecName) : Archive(a).meta().sources;
+        if (s.stored) {
+            s.tracks = readFlacMeta(a, &s.codecName, &s.medium);
+        } else {
+            const Archive opened(a);
+            s.tracks = opened.meta().sources;
+            s.medium = opened.meta().medium;
+        }
         sources.push_back(std::move(s));
+    }
+    // What was captured, of the file: what is asked, or what the files the tracks come from say (when they agree).
+    std::string medium;
+    if (o.medium) {
+        medium = *o.medium;
+    } else {
+        std::vector<std::string> said;
+        std::set<size_t> seen;
+        for (const Pick &p : picks) {
+            if (p.fromArchive && p.arch < sources.size() && seen.insert(p.arch).second) {
+                said.push_back(sources[p.arch].medium);
+            }
+        }
+        medium = mergedMedium(said);
     }
     // Tracks of files of the variant that is asked for, and nothing else: the streams are copied as they are (no decoding, no encoding), and
     // only the description of the tracks (rfx.json) is written again, with what the picks change (name, note, files, bits).
@@ -554,7 +582,7 @@ void assembleStored(const std::vector<QString> &archives, const std::vector<Pick
                 ~Remove() { QDir(dir).removeRecursively(); }
             } remove{dir};
             const QString json = QDir(dir).filePath(QStringLiteral("rfx.json"));
-            const std::vector<uint8_t> metaBytes = serializeFlacMeta(tracks, wanted);
+            const std::vector<uint8_t> metaBytes = serializeFlacMeta(tracks, wanted, medium);
             writeText(json, std::string(metaBytes.begin(), metaBytes.end()));
             args << "-attach" << json << "-metadata:s:t:0" << "mimetype=application/json" << "-metadata:s:t:0" << "filename=rfx.json" << "-f" << "matroska" << tmp;
             std::fprintf(stderr, "%zu track(s) copied as they are, no decoding and no encoding\n", tracks.size());
@@ -640,6 +668,7 @@ void assembleStored(const std::vector<QString> &archives, const std::vector<Pick
         }
     }
     PackOptions options = o;
+    options.medium = medium;
     options.order = OrderMode::Given;
     // The tracks come out under the names they had, whatever their extensions: the format is given, when it is one for all.
     options.format = same && !format.empty() ? format : "auto";

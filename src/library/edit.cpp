@@ -88,6 +88,17 @@ void assembleArchives(const std::vector<QString> &archives, const std::vector<Pi
         }
     }
     PackOptions o = requested;
+    // What was captured, of the file: what is asked, or what the files the tracks come from say (when they agree).
+    if (!o.medium) {
+        std::vector<std::string> said;
+        std::set<size_t> seen;
+        for (const Pick &p : picks) {
+            if (p.fromArchive && p.arch < opened.size() && seen.insert(p.arch).second) {
+                said.push_back(opened[p.arch]->meta().medium);
+            }
+        }
+        o.medium = mergedMedium(said);
+    }
     o.order = OrderMode::Given;
     o.format = "auto";
     const size_t segment = opened.empty() ? o.segment : opened.front()->meta().segment;
@@ -182,6 +193,7 @@ void assembleArchives(const std::vector<QString> &archives, const std::vector<Pi
             // Nothing to code: the blocks and the tables, renumbered.
             ArchiveMeta meta;
             meta.segment = segment;
+            meta.medium = o.medium.value_or(std::string());
             std::set<std::string> names;
             for (size_t k = 0; k < specs.size(); ++k) {
                 SourceMeta m = *specs[k].carry;

@@ -101,14 +101,43 @@ int runInfo(const QStringList &args)
     return kExitOk;
 }
 
+// What was captured, of the whole file (--source), and whether to treat a capture whose source is not said as a LaserDisc's (--ld).
+const QCommandLineOption &sourceOption()
+{
+    static const QCommandLineOption option("source", "What was captured, of the whole file: ld (a LaserDisc), vhs, vhd, cvbs, or unknown. The TBC curve is worked out for LaserDisc captures only.", "medium");
+    return option;
+}
+
+const QCommandLineOption &assumeLaserdiscOption()
+{
+    static const QCommandLineOption option("ld", "Treat the capture as a LaserDisc capture when its source is not said (to work out the TBC curve).");
+    return option;
+}
+
+// An empty string, or the message to give for a value that is not valid.
+QString readMedium(const QCommandLineParser &parser, rfx::PackOptions &out)
+{
+    out.assumeLaserdisc = parser.isSet(assumeLaserdiscOption());
+    if (parser.isSet(sourceOption())) {
+        std::string medium;
+        if (!rfx::parseMedium(parser.value(sourceOption()).toStdString(), medium)) {
+            return QStringLiteral("--source is ld, vhs, vhd, cvbs or unknown, not '%1'").arg(parser.value(sourceOption()));
+        }
+        out.medium = medium;
+    }
+    return QString();
+}
+
 int runKeepPass0(const QStringList &args)
 {
     QCommandLineParser parser;
     parser.setApplicationDescription("Work out the TBC curve of the tracks of an .rfx file from their RF (locating the lines, as the pass 0 of ld-decode does) and keep it in the file, as a block added at its end (nothing else is rewritten): the speed of the disc and the time base correction are then there for the programs that read it, without working it out again.");
     parser.addHelpOption();
     const QCommandLineOption all("all", "Work the TBC curve out again for the tracks that have it already (without it they are left as they are).");
+    const QCommandLineOption assumeLd("ld", "Treat the capture as a LaserDisc capture when the source of the file is not said (the TBC curve is for LaserDisc captures).");
     const QCommandLineOption rateMhz("rate-mhz", "Sample rate in MHz of a track that has none in the file.", "MHz", "75");
     parser.addOption(all);
+    parser.addOption(assumeLd);
     parser.addOption(rateMhz);
     parser.addPositionalArgument("archive", "The .rfx file (a predictor archive).");
     parser.process(args);
@@ -120,7 +149,7 @@ int runKeepPass0(const QStringList &args)
     if (!ok || rate <= 0) {
         return usageError(QStringLiteral("--rate-mhz wants a positive number, not '%1'").arg(parser.value(rateMhz)));
     }
-    const size_t done = rfx::keepPass0(parser.positionalArguments().first(), rate, !parser.isSet(all));
+    const size_t done = rfx::keepPass0(parser.positionalArguments().first(), rate, !parser.isSet(all), nullptr, std::nullopt, parser.isSet(assumeLd));
     std::fprintf(stderr, "TBC curve worked out and kept for %zu track(s)\n", done);
     return kExitOk;
 }
@@ -346,6 +375,8 @@ int runPack(const QStringList &args)
     for (const QCommandLineOption *o : {&output, &level, &segment, &noVerify, &pass0, &ldDecode, &palOption, &rateMhz, &format, &device, &order, &flac, &rawOption, &threads, &keepPass0}) {
         parser.addOption(*o);
     }
+    parser.addOption(sourceOption());
+    parser.addOption(assumeLaserdiscOption());
     parser.addPositionalArgument("captures", "The captures to pack.", "<capture>...");
     parser.process(args);
     if (parser.positionalArguments().isEmpty()) {
@@ -379,6 +410,9 @@ int runPack(const QStringList &args)
     options.externalPass0 = parser.isSet(ldDecode);
     options.pal = parser.isSet(palOption);
     options.keepPass0 = parser.isSet(keepPass0);
+    if (const QString bad = readMedium(parser, options); !bad.isEmpty()) {
+        return usageError(bad);
+    }
     if (const QString bad = disc.read(parser, options.info); !bad.isEmpty()) {
         return usageError(bad);
     }
@@ -447,6 +481,8 @@ struct WorkOptions
         for (const QCommandLineOption *o : {&level, &noVerify, &pass0, &ldDecode, &palOption, &rateMhz, &device, &threads, &keepPass0}) {
             parser.addOption(*o);
         }
+        parser.addOption(sourceOption());
+        parser.addOption(assumeLaserdiscOption());
     }
 
     // The options as the packer takes them; an empty string, or the message to
@@ -470,6 +506,9 @@ struct WorkOptions
         out.externalPass0 = parser.isSet(ldDecode);
         out.pal = parser.isSet(palOption);
         out.keepPass0 = parser.isSet(keepPass0);
+        if (const QString bad = readMedium(parser, out); !bad.isEmpty()) {
+            return bad;
+        }
         out.rateMhz = parser.value(rateMhz).toDouble(&ok);
         if (!ok || out.rateMhz <= 0) {
             return QStringLiteral("--rate-mhz wants a positive number, not '%1'").arg(parser.value(rateMhz));
@@ -638,8 +677,8 @@ int runEdit(const QString &command, const QStringList &args)
         if (positional.size() != 1) {
             return usageError("tag wants one .rfx file");
         }
-        if (!info.any()) {
-            return usageError("tag wants something to say: --standard, --reference, --copy, --capture-number, --face or --signal");
+        if (!info.any() && !options.medium) {
+            return usageError("tag wants something to say: --source, --standard, --reference, --copy, --capture-number, --face or --signal");
         }
         std::vector<size_t> which;
         if (!trackList(parser, changed, which, error)) {
@@ -869,7 +908,7 @@ void printHelp()
         "  extract   Write some of the tracks as a .rfx file of their own\n"
         "  remove    Write a .rfx file without some of the tracks\n"
         "  add       Write a .rfx file with more captures or the tracks of other .rfx files\n"
-        "  tag       Write a .rfx file with the standard, reference, copy, capture number, face or signal of some tracks said or changed\n"
+        "  tag       Write a .rfx file with the source of the file, or the standard, reference, copy, capture number, face or signal of some tracks, said or changed\n"
         "  tbc-curve Work out the TBC curve of the tracks from their RF and keep it in the file (the speed, the time base correction)\n"
         "  check     Check the integrity of .rfx files: every track against its SHA-256 (nothing is written)\n"
         "  info      Show what an .rfx file holds (--yaml: the whole metadata)\n"

@@ -47,6 +47,19 @@ bool parseStandard(const std::string &text, std::string &out);
 bool parseFace(const std::string &text, std::string &out);
 bool parseSignal(const std::string &text, std::string &out);
 
+// What was captured, said of the whole file and not of a track: a LaserDisc ("ld"), a VHS tape ("vhs"), a VideoDisc ("vhd"), or a composite signal
+// from something else ("cvbs"); the empty string is "not said" (unknown). The work that is a LaserDisc's (the TBC curve and what is made from it)
+// is done for "ld"; for "not said" a tool asks whether to treat the capture as one.
+constexpr const char *kMedia[] = {"ld", "vhs", "vhd", "cvbs"};
+// The value as the file writes it (lower case; "" and "unknown" give the empty string), or false when it is none of them.
+bool parseMedium(const std::string &text, std::string &out);
+// The work of the TBC curve is done for a LaserDisc ("ld"); for "not said" only when the person says to treat the capture as one (assumed).
+inline bool laserdiscWork(const std::string &medium, bool assumed) { return medium == "ld" || (medium.empty() && assumed); }
+// The name a person reads: "LD", "VHS", "VHD", "CVBS" or "unknown".
+std::string mediumName(const std::string &medium);
+// The medium of a file made of files that say these: the one they all say, when the ones that say anything agree; none (unknown) when they do not.
+std::string mergedMedium(const std::vector<std::string> &media);
+
 // What a person changes of that in a track: what is not given is left as it is; an empty text, or 0 for the copy, takes the value away.
 struct InfoEdit
 {
@@ -143,6 +156,8 @@ struct ArchiveMeta
     uint32_t version = kFormatVersion;
     // Samples per segment.
     size_t segment = 0;
+    // What was captured (see kMedia): of the whole file; empty when not said.
+    std::string medium;
     std::vector<SourceMeta> sources;
 };
 
@@ -153,8 +168,8 @@ std::vector<uint8_t> serializeMeta(const ArchiveMeta &meta);
 // The metadata of the FLAC variant (the attachment rfx.json, specification 9): one
 // entry per audio track, with the predictor fields zero or empty.
 // The variant stores its tracks as FLAC (`codec` "flac") or as raw PCM (`codec` "raw"); parse says which in `codecOut`.
-std::vector<SourceMeta> parseFlacMeta(const uint8_t *data, size_t size, std::string *codecOut = nullptr);
-std::vector<uint8_t> serializeFlacMeta(const std::vector<SourceMeta> &tracks, const char *codec = "flac");
+std::vector<SourceMeta> parseFlacMeta(const uint8_t *data, size_t size, std::string *codecOut = nullptr, std::string *mediumOut = nullptr);
+std::vector<uint8_t> serializeFlacMeta(const std::vector<SourceMeta> &tracks, const char *codec = "flac", const std::string &medium = std::string());
 
 // Lower-case hex of `bytes`.
 std::string toHex(const uint8_t *bytes, size_t size);

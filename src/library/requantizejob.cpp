@@ -454,7 +454,9 @@ std::vector<RequantizeResult> runRequantize(const RequantizeJob &job)
             }
             // The variant of the input is kept: FLAC stays FLAC and raw stays raw.
             std::string stored;
-            readFlacMeta(job.input, &stored);
+            std::string medium;
+            readFlacMeta(job.input, &stored, &medium);
+            options.medium = medium;   // (what was captured is said of the file, and stays)
             packFlac(inputs, job.output, options, stored == "raw" ? StoredCodec::Raw : StoredCodec::Flac);
         } else {
             std::vector<size_t> places;

@@ -33,7 +33,7 @@ bool isFlacArchive(const QString &path);
 enum class StoredCodec { Flac, Raw };
 
 // What the attachment rfx.json holds (and, in `codec`, whether the tracks are "flac" or "raw"). Throws rfx::Error.
-std::vector<SourceMeta> readFlacMeta(const QString &path, std::string *codec = nullptr);
+std::vector<SourceMeta> readFlacMeta(const QString &path, std::string *codec = nullptr, std::string *medium = nullptr);
 
 // What is told of a track besides its samples, for the track at the same place of `inputs`: the name, the rate, the note, the date of
 // its file, the bits it carries and the files that go with it, where they are not the ones the capture gives.

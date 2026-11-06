@@ -1090,6 +1090,32 @@ std::array<VideoSystem, 2> systemsToTry(const std::string &standard)
     return {VideoSystem::Ntsc, VideoSystem::Pal};
 }
 
+std::optional<VideoSystem> detectSystem(TrackReader &reader, size_t track, double fs, const std::string &standard, const std::atomic<bool> *stop)
+{
+    // The share of the capture that is looked at.
+    constexpr double kLook = 0.02;
+    std::optional<VideoSystem> found;
+    size_t best = 0;
+    for (const VideoSystem system : systemsToTry(standard)) {
+        std::atomic<bool> halt{false};
+        const std::vector<Field> fields = locateFields(reader, track, fs, system, 0, &halt, [&](double part) {
+            if (part >= kLook || (stop && stop->load())) {
+                halt = true;
+            }
+        });
+        if (stop && stop->load()) {
+            return std::nullopt;
+        }
+        const size_t usable = static_cast<size_t>(std::count_if(fields.begin(), fields.end(), [](const Field &f) { return f.lines.size() >= 20; }));
+        // (a tie goes to the one tried first: the system the standard says)
+        if (usable > best) {
+            best = usable;
+            found = system;
+        }
+    }
+    return found;
+}
+
 std::optional<std::string> doubtedStandard(const std::string &standard, bool foundPal)
 {
     const std::optional<VideoSystem> said = systemOfStandard(standard);
@@ -1104,11 +1130,51 @@ double nominalLineSamples(double fs, VideoSystem system)
     return fs * (system == VideoSystem::Pal ? pal() : ntsc()).lineUs / 1e6;
 }
 
-size_t keepPass0(const QString &archive, double fallbackRateMhz, bool onlyMissing, const std::atomic<bool> *stop, std::optional<size_t> track)
+std::map<size_t, VideoSystem> lookAtSystems(const QString &archive, double fallbackRateMhz, bool onlyMissing, const std::atomic<bool> *stop, std::optional<size_t> track,
+                                       bool assumeLaserdisc)
+{
+    std::map<size_t, VideoSystem> found;
+    TrackReader reader(archive);
+    if (!reader.keepsSpeed() || !laserdiscWork(reader.meta().medium, assumeLaserdisc)) {
+        return found;
+    }
+    std::vector<size_t> todo;
+    for (size_t k = 0; k < reader.meta().sources.size(); ++k) {
+        if ((!reader.pass0(k) || !onlyMissing) && (!track || *track == k)) {
+            todo.push_back(k);
+        }
+    }
+    std::mutex mutex;
+    std::vector<std::thread> lookers;
+    for (const size_t k : todo) {
+        lookers.emplace_back([&, k] {
+            try {
+                const double rate = reader.meta().sources[k].rateHz > 0 ? reader.meta().sources[k].rateHz : fallbackRateMhz * 1e6;
+                if (const auto system = detectSystem(reader, k, rate, reader.meta().sources[k].standard, stop)) {
+                    std::lock_guard<std::mutex> lock(mutex);
+                    found[k] = *system;
+                }
+            } catch (const std::exception &) {
+                // (the work itself says what is wrong with the track)
+            }
+        });
+    }
+    for (std::thread &l : lookers) {
+        l.join();
+    }
+    return found;
+}
+
+size_t keepPass0(const QString &archive, double fallbackRateMhz, bool onlyMissing, const std::atomic<bool> *stop, std::optional<size_t> track, bool assumeLaserdisc)
 {
     TrackReader reader(archive);
     if (!reader.keepsSpeed()) {
         throw Error(archive.toStdString() + ": only a predictor archive can keep a TBC curve");
+    }
+    if (!laserdiscWork(reader.meta().medium, assumeLaserdisc)) {
+        throw Error(archive.toStdString() + ": the source of the file is " + mediumName(reader.meta().medium) +
+                    (reader.meta().medium.empty() ? " (not said): the TBC curve is for LaserDisc captures; treat it as one with --ld, or say it with tag --source ld"
+                                                  : ": the TBC curve is for LaserDisc captures"));
     }
     const size_t count = reader.meta().sources.size();
     if (track && *track >= count) {
@@ -1142,6 +1208,44 @@ size_t keepPass0(const QString &archive, double fallbackRateMhz, bool onlyMissin
         std::fprintf(stderr, "pass 0 [%zu/%zu] curve: %d%%%c", finished, todo.size(), mean, last ? '\n' : '\r');
         std::fflush(stderr);
     };
+    // A quick look first, at the start of each track: which system its lines are of. It is told at once, so that the person can say it of the
+    // tracks whose standard seems wrong while the long work goes on, and the long work does not start with the wrong system.
+    std::vector<std::optional<VideoSystem>> detected(count);
+    {
+        std::vector<std::thread> lookers;
+        for (const size_t k : todo) {
+            lookers.emplace_back([&, k] {
+                try {
+                    const double rate = reader.meta().sources[k].rateHz > 0 ? reader.meta().sources[k].rateHz : fallbackRateMhz * 1e6;
+                    detected[k] = detectSystem(reader, k, rate, reader.meta().sources[k].standard, stop);
+                } catch (const std::exception &) {
+                    // (the work itself says what is wrong with the track)
+                }
+            });
+        }
+        for (std::thread &l : lookers) {
+            l.join();
+        }
+    }
+    {
+        std::string line = "systems:";
+        for (const size_t k : todo) {
+            if (detected[k]) {
+                line += " " + std::to_string(k) + "=" + (*detected[k] == VideoSystem::Pal ? "pal" : "ntsc");
+            }
+        }
+        // (always told, even when nothing was found: the program that started this may be waiting for it)
+        std::fprintf(stderr, "%s\n", line.c_str());
+        for (const size_t k : todo) {
+            const std::string &said = reader.meta().sources[k].standard;
+            if (detected[k]) {
+                if (const auto suggestion = doubtedStandard(said, *detected[k] == VideoSystem::Pal)) {
+                    std::fprintf(stderr, "track %zu: the standard said is %s and its lines are those of %s (rfx tag --standard %s says it)\n", k, said.c_str(),
+                                 *suggestion == "pal" ? "PAL" : "NTSC", suggestion->c_str());
+                }
+            }
+        }
+    }
     std::fprintf(stderr, "working out the TBC curve of %zu track(s) (pass 0)\n", todo.size());
     std::vector<std::thread> workers;
     for (const size_t k : todo) {
@@ -1149,7 +1253,11 @@ size_t keepPass0(const QString &archive, double fallbackRateMhz, bool onlyMissin
             try {
                 const double rate = reader.meta().sources[k].rateHz > 0 ? reader.meta().sources[k].rateHz : fallbackRateMhz * 1e6;
                 // (the standard said of the track tells which system to try first)
-                for (const VideoSystem system : systemsToTry(reader.meta().sources[k].standard)) {
+                std::array<VideoSystem, 2> order = systemsToTry(reader.meta().sources[k].standard);
+                if (detected[k] && order[0] != *detected[k]) {
+                    std::swap(order[0], order[1]);
+                }
+                for (const VideoSystem system : order) {
                     const bool pal = system == VideoSystem::Pal;
                     std::vector<Field> fields = locateFields(reader, k, rate, system, 0, stop, [&](double part) {
                         const int now = std::clamp(static_cast<int>(part * 100.0), 0, 100);

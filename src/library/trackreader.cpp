@@ -61,7 +61,7 @@ TrackReader::TrackReader(const QString &path)
     if (m_stored) {
         // The FLAC or raw variant: the metadata of its tracks are in rfx.json, and there is nothing to decode but the audio.
         m_meta.segment = kCaptureSegment;
-        m_meta.sources = readFlacMeta(path);
+        m_meta.sources = readFlacMeta(path, nullptr, &m_meta.medium);
         m_file = std::make_unique<PosFile>(path, PosFile::Mode::Read);
         indexStored();
     } else {

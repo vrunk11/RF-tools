@@ -437,6 +437,7 @@ std::unique_ptr<PreparedPack> prepareCaptures(const std::vector<QString> &given,
 
     phase("lag tables");
     ArchiveMeta &meta = prepared->meta;
+    meta.medium = o.medium.value_or(std::string());
     meta.segment = o.segment;
     if (meta.segment == 0) {
         throw Error("the segment size must be positive");
@@ -638,6 +639,11 @@ std::vector<PackedTrack> writePrepared(PreparedPack &prepared, const QString &ou
     // not lose them), and with keepPass0 the others, where they were located.
     const auto keepLines = [&] {
         std::map<size_t, SavedPass0> found;
+        // (the curve is worked out for a LaserDisc only: for what is not said, only when the person said to treat it as one)
+        const bool newCurves = o.keepPass0 && laserdiscWork(meta.medium, o.assumeLaserdisc);
+        if (o.keepPass0 && !newCurves) {
+            std::fprintf(stderr, "no TBC curve is worked out: the source of the file is %s (it is for LaserDisc captures; say --source ld, or --ld)\n", mediumName(meta.medium).c_str());
+        }
         for (size_t k = 0; k < meta.sources.size(); ++k) {
             if (k < copy.size() && copy[k]) {
                 const auto carried = copy[k]->archive->pass0().find(copy[k]->track);
@@ -646,7 +652,7 @@ std::vector<PackedTrack> writePrepared(PreparedPack &prepared, const QString &ou
                     continue;
                 }
             }
-            if (o.keepPass0 && k < prepared.fields.size()
+            if (newCurves && k < prepared.fields.size()
                 && std::any_of(prepared.fields[k].begin(), prepared.fields[k].end(), [](const Field &f) { return f.lines.size() >= 20; })) {
                 found[k] = SavedPass0{prepared.pal, meta.sources[k].rateHz > 0 ? meta.sources[k].rateHz : prepared.fieldsRateHz, prepared.fields[k]};
             }
@@ -795,6 +801,10 @@ std::vector<PackedTrack> packCapturesLike(const std::vector<QString> &inputs, co
     }
     Archive like(archivePath);
     const std::vector<SourceMeta> &sources = like.meta().sources;
+    PackOptions likeOptions = options;
+    if (!likeOptions.medium) {
+        likeOptions.medium = like.meta().medium;
+    }
     std::map<size_t, size_t> placeOf;
     for (size_t k = 0; k < tracks.size(); ++k) {
         if (tracks[k] >= sources.size()) {
@@ -856,7 +866,7 @@ std::vector<PackedTrack> packCapturesLike(const std::vector<QString> &inputs, co
         specs[k].like = std::move(m);
     }
 
-    PackOptions o = options;
+    PackOptions o = likeOptions;
     o.order = OrderMode::Given;
     o.format = "auto";
     // Cut into segments as the archive was.

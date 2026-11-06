@@ -54,6 +54,11 @@ struct PackOptions
     bool keepPass0 = false;
     // The disc and the signal said of every capture that is packed (see InfoEdit).
     InfoEdit info;
+    // What was captured, of the whole file (see kMedia): given, it replaces what the files say ("" is not said); not given, a new file says nothing and
+    // one made from files says what they say (when they agree).
+    std::optional<std::string> medium;
+    // The source is not said and the capture is to be treated as a LaserDisc anyway (the TBC curve is only worked out for a LaserDisc).
+    bool assumeLaserdisc = false;
     // The captures are of a PAL disc (NTSC when not).
     bool pal = false;
     // Capture sample rate in MHz, for pass 0 and for the metadata when the

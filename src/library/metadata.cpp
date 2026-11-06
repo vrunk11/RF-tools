@@ -19,6 +19,7 @@
 #include <QJsonParseError>
 
 #include <algorithm>
+#include <cctype>
 #include <cstring>
 
 namespace rfx {
@@ -334,6 +335,13 @@ ArchiveMeta parseMeta(const uint8_t *data, size_t size)
     if (m.segment == 0) {
         bad("the segment size is 0");
     }
+    {
+        // (a value that is none of the media is read as not said: it is not for this reader to refuse a file for it)
+        const QJsonValue medium = field(root, "medium", false);
+        if (medium.isString()) {
+            parseMedium(medium.toString().toStdString(), m.medium);
+        }
+    }
     const QJsonValue sources = field(root, "sources", true);
     if (!sources.isArray()) {
         bad("the field sources is not an array");
@@ -374,6 +382,9 @@ std::vector<uint8_t> serializeMeta(const ArchiveMeta &meta)
     std::string out = "{\"format\":" + jsonQuote(meta.format);
     out += ",\"version\":" + std::to_string(meta.version);
     out += ",\"segment\":" + std::to_string(meta.segment);
+    if (!meta.medium.empty()) {
+        out += ",\"medium\":" + jsonQuote(meta.medium);
+    }
     out += ",\"sources\":[";
     for (size_t i = 0; i < meta.sources.size(); ++i) {
         if (i) {
@@ -385,7 +396,7 @@ std::vector<uint8_t> serializeMeta(const ArchiveMeta &meta)
     return std::vector<uint8_t>(out.begin(), out.end());
 }
 
-std::vector<SourceMeta> parseFlacMeta(const uint8_t *data, size_t size, std::string *codecOut)
+std::vector<SourceMeta> parseFlacMeta(const uint8_t *data, size_t size, std::string *codecOut, std::string *mediumOut)
 {
     QJsonParseError err;
     const QJsonDocument doc = QJsonDocument::fromJson(QByteArray(reinterpret_cast<const char *>(data), static_cast<qsizetype>(size)), &err);
@@ -401,6 +412,13 @@ std::vector<SourceMeta> parseFlacMeta(const uint8_t *data, size_t size, std::str
     }
     if (codecOut) {
         *codecOut = codec;
+    }
+    if (mediumOut) {
+        mediumOut->clear();
+        const QJsonValue medium = field(root, "medium", false);
+        if (medium.isString()) {
+            parseMedium(medium.toString().toStdString(), *mediumOut);
+        }
     }
     const QJsonValue tracks = field(root, "tracks", true);
     if (!tracks.isArray()) {
@@ -421,9 +439,13 @@ std::vector<SourceMeta> parseFlacMeta(const uint8_t *data, size_t size, std::str
     return out;
 }
 
-std::vector<uint8_t> serializeFlacMeta(const std::vector<SourceMeta> &tracks, const char *codec)
+std::vector<uint8_t> serializeFlacMeta(const std::vector<SourceMeta> &tracks, const char *codec, const std::string &medium)
 {
-    std::string out = std::string("{\"format\":\"rfx\",\"codec\":\"") + codec + "\",\"version\":1,\"tracks\":[";
+    std::string out = std::string("{\"format\":\"rfx\",\"codec\":\"") + codec + "\",\"version\":1";
+    if (!medium.empty()) {
+        out += ",\"medium\":" + jsonQuote(medium);
+    }
+    out += ",\"tracks\":[";
     for (size_t i = 0; i < tracks.size(); ++i) {
         if (i) {
             out += ',';
@@ -449,6 +471,44 @@ std::string toHex(const uint8_t *bytes, size_t size)
 bool parseStandard(const std::string &text, std::string &out)
 {
     return oneOf(text, kStandards, sizeof(kStandards) / sizeof(kStandards[0]), true, out);
+}
+
+bool parseMedium(const std::string &text, std::string &out)
+{
+    std::string t;
+    for (const char c : text) {
+        t += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    if (t.empty() || t == "unknown") {
+        out.clear();
+        return true;
+    }
+    return oneOf(t, kMedia, sizeof(kMedia) / sizeof(kMedia[0]), true, out);
+}
+
+std::string mediumName(const std::string &medium)
+{
+    std::string out;
+    for (const char c : medium) {
+        out += static_cast<char>(std::toupper(static_cast<unsigned char>(c)));
+    }
+    return out.empty() ? "unknown" : out;
+}
+
+std::string mergedMedium(const std::vector<std::string> &media)
+{
+    std::string said;
+    for (const std::string &m : media) {
+        if (m.empty()) {
+            continue;
+        }
+        if (said.empty()) {
+            said = m;
+        } else if (said != m) {
+            return std::string();
+        }
+    }
+    return said;
 }
 
 bool parseFace(const std::string &text, std::string &out)
