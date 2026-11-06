@@ -95,11 +95,16 @@ The payload of the block in the cluster of track `n + 1` is one JSON object
 (UTF-8, as `serde_json` writes it):
 
 ```
-{ "format": "rfx", "version": 1, "segment": 262144, "sources": [ T0, T1, ... ] }
+{ "format": "rfx", "version": 1, "segment": 262144, "medium": "ld", "sources": [ T0, T1, ... ] }
 ```
 
 A reader refuses `format` other than `"rfx"` and `version` other than 1.
-`segment` is the number of samples per segment (section 6). `sources` has one
+`segment` is the number of samples per segment (section 6). `medium` is **what was captured, said of the whole file** (shown as *Source*): `"ld"` (a
+LaserDisc), `"vhs"` (a VHS tape), `"vhd"` (a VideoDisc) or `"cvbs"` (a composite signal from something else); it is written only when it is said,
+and a file without it, or with another value, is of an **unknown** source. The work that is a LaserDisc's (the TBC curve of section 3.1, and what is made
+from it: the correction of the time base, the stack) is done for `"ld"`; for an unknown source a tool asks whether to treat the capture as a
+LaserDisc's, and for another source it does not do it. A file made from files that say a source says it when the ones that say anything agree, and says
+none when they do not. In the FLAC and raw variant the field is at the root of `rfx.json` (section 9) in the same way. `sources` has one
 object per data track, in track-number order (`sources[k]` is track `k + 1`;
 the document and the commands count tracks from 0, with 0 the primary). Each
 object has these fields; a field marked *default* may be missing and then has
@@ -138,7 +143,7 @@ Unknown fields are ignored. Tools that only want the metadata (`rfx info`,
 
 ### 3.1 The TBC curve: pass 0 of the tracks (optional)
 
-An archive may keep the **TBC curve** of its tracks, that is what pass 0 found in their RF: the fields, with their frame codes and the place of each line. From it the
+An archive of a LaserDisc capture (`medium` `"ld"`, or treated as one by a person who is asked when the source is unknown; not for another source) may keep the **TBC curve** of its tracks, that is what pass 0 found in their RF: the fields, with their frame codes and the place of each line. From it the
 speed of the disc and the time base correction are made, with no need to read the samples again (it takes minutes on a large capture). It
 is in an extra **cluster of the metadata track** (track number `n + 1`) with the timestamp **1**, usually at the end of the file (a tool
 adds it by appending, without rewriting the archive); when there are several, the last one counts. Its block holds one JSON object:
@@ -471,7 +476,7 @@ field `codec` of `rfx.json`; a reader needs only the following.
     original written one after the other, `2 * words` bytes in all, in the blocks in
     order.
 - **Attachment** named `rfx.json` (MIME `application/json`): one JSON object
-  `{ "format": "rfx", "codec": "flac" or "raw", "version": 1, "tracks": [ ... ] }` with
+  `{ "format": "rfx", "codec": "flac" or "raw", "version": 1, "medium": "ld", "tracks": [ ... ] }` (`medium` as in section 3, only when it is said) with
   one entry per audio track, in order, in the schema of section 3 with the
   predictor fields (`own` ... `lam_bits`, `refs`, `weights`) zero or empty.
 - **Samples.** The samples `s` of the stream (FLAC or PCM, 16-bit signed) relate to the canonical

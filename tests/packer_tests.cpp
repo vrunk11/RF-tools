@@ -28,10 +28,12 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QListWidget>
+#include <QMessageBox>
 #include <QPlainTextEdit>
 #include <QPushButton>
 #include <QSettings>
 #include <QTemporaryDir>
+#include <QTimer>
 #include <QTest>
 #include <QToolButton>
 
@@ -115,6 +117,7 @@ private slots:
     void keepsThePass0OfWhatItPacks();
     void mergesFilesWithoutCodingAgain();
     void saysWhatTheDiscIs();
+    void choosesWhatWasCaptured();
     void checksTheTracksAgainstTheirChecksums();
     void panelOpensAndCloses();
 
@@ -138,6 +141,7 @@ void PackerTests::initTestCase()
     write(m_dir.filePath("p0/pass0_1.txt"), pass0Dump(495));
     rfx::PackOptions pack = options();
     pack.pass0Dir = m_dir.filePath("p0");
+    pack.medium = std::string("ld");
     m_archive = m_dir.filePath("two.rfx");
     rfx::packCaptures({m_dir.filePath("a.ddd.s16"), m_dir.filePath("b.ddd.s16")}, m_archive, pack);
 }
@@ -354,6 +358,75 @@ void PackerTests::computesThePass0Curve()
     QVERIFY(w.findChild<QAction *>("computePass0"));
 }
 
+// The next box that asks something (a modal message box) is answered with `button`.
+static void answerNextBox(QMessageBox::StandardButton button, bool *seen)
+{
+    QTimer::singleShot(50, qApp, [button, seen] {
+        auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+        if (!box || !box->button(button)) {
+            answerNextBox(button, seen);
+            return;
+        }
+        *seen = true;
+        box->button(button)->click();
+    });
+}
+
+// What was captured, of the whole list: the selector says it, it is written with the file, and the work of the TBC curve is for LaserDisc captures (a
+// source that is not said is asked about, and another is refused).
+void PackerTests::choosesWhatWasCaptured()
+{
+    const QString unsaid = m_dir.filePath("unsaid.rfx");
+    {
+        rfx::PackOptions o = options();
+        o.medium = std::string();
+        rfx::assembleArchives({m_archive}, rfx::pickAll({m_archive}), unsaid, o, std::nullopt);
+    }
+    QVERIFY(rfx::Archive(m_archive).meta().medium == "ld");
+    QVERIFY(rfx::Archive(unsaid).meta().medium.empty());
+
+    MainWindow w;
+    auto *combo = w.findChild<QComboBox *>("sourceCombo");
+    QVERIFY(combo);
+    QCOMPARE(combo->count(), 5);
+    // (what the file says is what the selector shows)
+    QVERIFY(w.openArchive(m_archive));
+    QCOMPARE(combo->currentData().toString(), QStringLiteral("ld"));
+    QVERIFY(w.openArchive(unsaid));
+    QCOMPARE(combo->currentData().toString(), QString());
+
+    // Not said: asked. No does nothing; Yes treats it as a LaserDisc's, says LD in the list, and the file written says it.
+    bool seen = false;
+    answerNextBox(QMessageBox::No, &seen);
+    QVERIFY(!w.computePass0(false));
+    QVERIFY(seen);
+    QCOMPARE(combo->currentData().toString(), QString());
+    seen = false;
+    answerNextBox(QMessageBox::Yes, &seen);
+    QVERIFY(w.computePass0(false));
+    QVERIFY(seen);
+    QCOMPARE(combo->currentData().toString(), QString());   // (read as a LaserDisc capture for the work: the source is not said for it)
+    const QString written = m_dir.filePath("said-ld.rfx");
+    rfx::PackOptions o = options();
+    QVERIFY(w.process(written, &o));
+    QVERIFY(rfx::Archive(written).meta().medium.empty());
+
+    // Another source: refused with a message, and said in the file that is written.
+    QVERIFY(w.openArchive(unsaid));
+    combo->setCurrentIndex(combo->findData(QStringLiteral("vhs")));
+    seen = false;
+    answerNextBox(QMessageBox::Ok, &seen);
+    QVERIFY(!w.computePass0(false));
+    QVERIFY(seen);
+    const QString tape = m_dir.filePath("said-vhs.rfx");
+    QVERIFY(w.process(tape, &o));
+    QVERIFY(rfx::Archive(tape).meta().medium == "vhs");
+    // (a change of the selector is a change of the list)
+    QVERIFY(w.openArchive(tape));
+    combo->setCurrentIndex(combo->findData(QStringLiteral("cvbs")));
+    QVERIFY(w.findChild<QLabel *>("summary") != nullptr);
+}
+
 void PackerTests::saysWhatTheDiscIs()
 {
     // The information panel says the standard, the reference, the copy, the face and the signal; they are written to the file (a track copied
@@ -489,6 +562,7 @@ void PackerTests::keepsThePass0OfWhatItPacks()
     pack.pass0Dir = m_dir.filePath("p0");
     pack.order = rfx::OrderMode::Given;
     pack.keepPass0 = true;
+    pack.medium = std::string("ld");
     const QString kept = m_dir.filePath("kept.rfx");
     rfx::packCaptures({m_dir.filePath("a.ddd.s16"), m_dir.filePath("b.ddd.s16")}, kept, pack);
     {

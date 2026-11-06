@@ -362,6 +362,7 @@ static void answerStandards(bool accept, bool *seen)
 void AnalyseGuiTests::windowFollowsTheMouse()
 {
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1100, 800);
     QVERIFY(w.openFile(m_archive));
     w.show();
@@ -412,6 +413,7 @@ void AnalyseGuiTests::windowFollowsTheMouse()
 void AnalyseGuiTests::navigationAndTracks()
 {
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1100, 800);
     QVERIFY(w.openFile(m_archive));
     w.show();
@@ -459,6 +461,7 @@ void AnalyseGuiTests::navigationAndTracks()
 void AnalyseGuiTests::viewsHaveWhatToShow()
 {
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1100, 900);
     QVERIFY(w.openFile(m_archive));
     w.show();
@@ -610,6 +613,7 @@ void AnalyseGuiTests::opensARawCapture()
     // The window: the one track, its metadata without what only an archive has, and
     // no curve of deviation.
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1100, 800);
     spec.format = rfx::SampleFormat::S16;
     QVERIFY(w.openCapture(raw, spec));
@@ -625,7 +629,7 @@ void AnalyseGuiTests::opensARawCapture()
     {
         QTreeWidgetItem *capture = panel->topLevelItem(1);
         QCOMPARE(capture->text(0), QStringLiteral("Capture"));
-        QCOMPARE(capture->childCount(), 9);
+        QCOMPARE(capture->childCount(), 10);
         const auto value = [&](int row) { return panel->itemWidget(capture->child(row), 0)->toolTip(); };
         QVERIFY2(value(0).contains("2026-10-27 07:33:55") && value(0).contains("07:34:05") && value(0).contains("10.8 s"), qPrintable(value(0)));
         QVERIFY(!value(1).isEmpty() && value(1) != QStringLiteral("not recorded"));
@@ -633,7 +637,8 @@ void AnalyseGuiTests::opensARawCapture()
         for (int row = 2; row <= 7; ++row) {
             QCOMPARE(value(row), QStringLiteral("not said"));
         }
-        QCOMPARE(value(8), QStringLiteral("none"));
+        QCOMPARE(value(8), QStringLiteral("unknown"));   // (the source of the file: nothing was said)
+        QCOMPARE(value(9), QStringLiteral("none"));
     }
     auto *deviation = w.findChild<DeviationBlock *>("combinedDeviation")->findChild<DeviationView *>();
     QVERIFY(deviation->curves().isEmpty());
@@ -750,6 +755,7 @@ void AnalyseGuiTests::opensSeveralFiles()
     // The window: all the tracks in the list, the metadata of a capture among them, and
     // the title that says there are several files.
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1100, 900);
     QVERIFY(w.openSources({one, capture}));
     w.show();
@@ -810,6 +816,7 @@ void AnalyseGuiTests::hasThemesAndIcons()
 {
     // The icons of ld-analyse are in the program, and the window has View > Theme and View > Style.
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     for (const char *icon : {"start-frame", "prev-frame", "next-frame", "end-frame", "zoom-in", "zoom-out", "zoom-original"}) {
         QVERIFY2(!QIcon(QStringLiteral(":/icons/Graphics/%1.png").arg(QLatin1String(icon))).isNull(), icon);
     }
@@ -841,6 +848,7 @@ void AnalyseGuiTests::listOfTracksCanBePutAway()
 
     // One track: the list is put away and the info stays, with the arrow to bring it back.
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1100, 800);
     QVERIFY(w.openSources({capture}));
     w.show();
@@ -911,6 +919,7 @@ void AnalyseGuiTests::listOfTracksCanBePutAway()
 void AnalyseGuiTests::blocksCanBeTakenAway()
 {
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1100, 800);
     Session::Source capture;
     capture.path = m_dir.filePath("b.ddd.s16");
@@ -958,6 +967,7 @@ void AnalyseGuiTests::graphsFollowTheSizeAndShowValues()
     capture.capture = true;
     capture.spec.rateHz = 40e6;
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1000, 800);
     QVERIFY(w.openSources({capture}));
     w.show();
@@ -1062,6 +1072,7 @@ void AnalyseGuiTests::compactModeAndSpectrumControls()
     capture.capture = true;
     capture.spec.rateHz = 40e6;
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1100, 800);
     QVERIFY(w.openSources({capture, capture}));
     w.show();
@@ -1147,6 +1158,7 @@ void AnalyseGuiTests::showsTheSidecarOfACapture()
     spec.format = rfx::SampleFormat::S16;
     spec.rateHz = 40e6;
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1100, 800);
     QVERIFY(w.openCapture(raw, spec));
     w.show();
@@ -1240,6 +1252,7 @@ void AnalyseGuiTests::speedFromTheRf()
     {
         rfx::PackOptions pack;
         pack.threads = 2;
+        pack.medium = std::string("ld");
         pack.order = rfx::OrderMode::Given;
         pack.segment = 65536;
         pack.rateMhz = 40.0;
@@ -1311,8 +1324,8 @@ void AnalyseGuiTests::speedFromTheRf()
         // The lines can also be located and kept by the library (what rf-packer does): the speed is there when the file is opened.
         const QString other = m_dir.filePath("fast-kept.rfx");
         rfx::packCaptures({path}, other, pack);
-        QCOMPARE(rfx::keepPass0(other, 40.0, true), size_t(1));
-        QCOMPARE(rfx::keepPass0(other, 40.0, true), size_t(0));   // (nothing left to do)
+        QCOMPARE(rfx::keepPass0(other, 40.0, true, nullptr, std::nullopt, true), size_t(1));
+        QCOMPARE(rfx::keepPass0(other, 40.0, true, nullptr, std::nullopt, true), size_t(0));   // (nothing left to do)
         Session kept;
         QVERIFY2(kept.open(other, &error), qPrintable(error));
         QVERIFY(kept.curveReady(0));
@@ -1362,6 +1375,7 @@ void AnalyseGuiTests::speedFromTheRf()
         QString asked;
         {
             MainWindow window;
+            window.setAssumeLaserdisc(true);
             workedOut(window);
             if (QTest::currentTestFailed()) {
                 return;
@@ -1378,6 +1392,7 @@ void AnalyseGuiTests::speedFromTheRf()
         }
         {
             MainWindow window;
+            window.setAssumeLaserdisc(true);
             workedOut(window);
             if (QTest::currentTestFailed()) {
                 return;
@@ -1389,7 +1404,7 @@ void AnalyseGuiTests::speedFromTheRf()
             QCOMPARE(rfx::Archive(quit).pass0().size(), size_t(1));
         }
         // A curve whose lines are not those of the standard said for the track: the window lists it. The cross leaves the track as it is; Update
-        // says what the lines found say (and the curve that was just worked out stays in the file).
+        // says what the lines found say (the curve that was just worked out is not put in the file for it: that is for the person to ask).
         {
             rfx::PackOptions said = pack;
             said.info.standard = std::string("pal");
@@ -1397,17 +1412,66 @@ void AnalyseGuiTests::speedFromTheRf()
             rfx::packCaptures({path}, doubted, said);
             for (const bool accept : {false, true}) {
                 MainWindow window;
+                window.setAssumeLaserdisc(true);
                 QVERIFY(window.openFile(doubted));
                 auto *inside = window.findChild<Session *>();
                 QVERIFY(inside);
                 bool seen = false;
                 answerStandards(accept, &seen);
                 inside->computeCurve(0);
+                // The box is asked at the start of the work (the standard is looked at before the lines of the whole track are); what is chosen is written
+                // once the curve is worked out.
                 QTRY_VERIFY_WITH_TIMEOUT(seen, 60000);
-                QTest::qWait(300);
-                const rfx::Archive after(doubted);
+                QTRY_VERIFY_WITH_TIMEOUT(inside->curveReady(0) && !inside->rfSpeedBusy(), 60000);
+                if (accept) {
+                    QTRY_COMPARE_WITH_TIMEOUT(QString::fromStdString(rfx::Archive(doubted).meta().sources[0].standard), QStringLiteral("ntsc"), 30000);
+                }                const rfx::Archive after(doubted);
                 QCOMPARE(QString::fromStdString(after.meta().sources[0].standard), accept ? QStringLiteral("ntsc") : QStringLiteral("pal"));
-                QCOMPARE(after.pass0().size(), accept ? size_t(1) : size_t(0));
+                QCOMPARE(after.pass0().size(), size_t(0));
+                QCOMPARE(inside->unsavedCurves(), 1);
+            }
+        }
+        // What was captured: the work of the TBC curve is for LaserDisc captures. A file that does not say asks first (Yes reads it as a LaserDisc capture for the work, without writing anything in the file; No does
+        // nothing), and a file of another source is refused with a message.
+        {
+            struct Case
+            {
+                const char *name;
+                const char *medium;   // what the file says
+                QMessageBox::StandardButton answer;
+                bool worked;          // the curve is worked out
+                const char *written;  // what the file says after
+            };
+            const Case cases[] = {
+                {"ask-yes", "", QMessageBox::Yes, true, ""},
+                {"ask-no", "", QMessageBox::No, false, ""},
+                {"ld", "ld", QMessageBox::NoButton, true, "ld"},
+                {"vhs", "vhs", QMessageBox::Ok, false, "vhs"},
+            };
+            for (const Case &c : cases) {
+                rfx::PackOptions said = pack;
+                said.medium = std::string(c.medium);
+                const QString file = m_dir.filePath(QStringLiteral("fast-source-%1.rfx").arg(QLatin1String(c.name)));
+                rfx::packCaptures({path}, file, said);
+                MainWindow window;   // (the window that asks: it is not told to treat captures as LaserDisc ones)
+                QVERIFY(window.openFile(file));
+                auto *inside = window.findChild<Session *>();
+                QVERIFY(inside);
+                QCOMPARE(QString::fromStdString(inside->mediumOf(0)), QString::fromLatin1(c.medium));
+                QString asked;
+                if (c.answer != QMessageBox::NoButton) {
+                    answerNextBox(c.answer, &asked);
+                }
+                inside->computeCurve(0);
+                if (c.worked) {
+                    QTRY_VERIFY_WITH_TIMEOUT(inside->curveReady(0) && !inside->rfSpeedBusy(), 60000);
+                } else {
+                    QTest::qWait(300);
+                    QVERIFY(!inside->curveReady(0));
+                }
+                QCOMPARE(!asked.isEmpty(), c.answer != QMessageBox::NoButton);
+                QCOMPARE(QString::fromStdString(rfx::Archive(file).meta().medium), QString::fromLatin1(c.written));
+                QCOMPARE(QString::fromStdString(inside->mediumOf(0)), QString::fromLatin1(c.written));
             }
         }
     }
@@ -1555,6 +1619,7 @@ void AnalyseGuiTests::alignsASubsetOfTheTracks()
 void AnalyseGuiTests::checksTheTracksAgainstTheirChecksums()
 {
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1100, 800);
     QVERIFY(w.openFile(m_archive));
     // The folder of what was opened is remembered, for the next dialog to start in.
@@ -1612,6 +1677,7 @@ void AnalyseGuiTests::editsATrackInItsFile()
     QVERIFY(QFile::copy(m_archive, copy));
     const qint64 before = QFileInfo(copy).size();
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1100, 800);
     QVERIFY(w.openFile(copy));
     auto *session = w.findChild<Session *>();
@@ -1626,7 +1692,19 @@ void AnalyseGuiTests::editsATrackInItsFile()
     edit.info.capture = 7u;
     edit.info.face = std::string("BA");
     edit.info.signal = std::string("cvbs");
+    // The window stays as it is: nothing is closed or opened again, only what the files say of the tracks is read again.
+    session->setWindowStart(100000);
+    const qint64 start = session->windowStart();
+    const qint64 length = session->windowLength();
+    QSignalSpy reopened(session, &Session::opened);
+    QSignalSpy closedSpy(session, &Session::closed);
+    QSignalSpy renewed(session, &Session::tracksChanged);
     QVERIFY(w.rewriteTrack(1, edit, true));
+    QCOMPARE(reopened.count(), 0);
+    QCOMPARE(closedSpy.count(), 0);
+    QVERIFY(renewed.count() >= 1);
+    QCOMPARE(session->windowStart(), start);
+    QCOMPARE(session->windowLength(), length);
     QVERIFY(settle(*session));
     QCOMPARE(session->trackCount(), 2);
     QCOMPARE(session->selected(), 1);
@@ -1640,6 +1718,14 @@ void AnalyseGuiTests::editsATrackInItsFile()
     QVERIFY(!QFileInfo::exists(m_dir.filePath("to-edit.edit.rfx")));
     const std::vector<rfx::TrackCheck> checks = rfx::verifyArchive(copy);
     QVERIFY(checks.size() == 2 && checks[0].ok && checks[1].ok);
+    // A second edit, of another track, works on the file as it was written (the window still knows what is open).
+    rfx::TrackEdit second;
+    second.info.standard = std::string("pal");
+    QVERIFY(w.rewriteTrack(0, second, true));
+    QVERIFY(settle(*session));
+    QCOMPARE(session->trackCount(), 2);
+    QCOMPARE(QString::fromStdString(session->track(0).standard), QStringLiteral("pal"));
+    QCOMPARE(QString::fromStdString(session->track(1).standard), QStringLiteral("ntsc-vhd"));
     // A capture on its own cannot be said anything of.
     rfx::CaptureSpec spec;
     spec.format = rfx::SampleFormat::S16;
@@ -1662,9 +1748,11 @@ void AnalyseGuiTests::showsWhatTheDiscIs()
     pack.info.capture = 4u;
     pack.info.face = std::string("AB");
     pack.info.signal = std::string("yc");
+    pack.medium = std::string("ld");
     const QString said = m_dir.filePath("said.rfx");
     rfx::packCaptures({m_dir.filePath("a.ddd.s16")}, said, pack);
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1000, 700);
     QVERIFY(w.openFile(said));
     auto *session = w.findChild<Session *>();
@@ -1679,6 +1767,7 @@ void AnalyseGuiTests::showsWhatTheDiscIs()
     QCOMPARE(value(5), QStringLiteral("4"));   // (the capture)
     QCOMPARE(value(6), QStringLiteral("AB"));
     QCOMPARE(value(7), QStringLiteral("Y/C"));
+    QCOMPARE(value(8), QStringLiteral("LD"));   // (what was captured, of the whole file)
     // (in the metadata too, read back as it was written)
     const rfx::Archive archive(said);
     QCOMPARE(QString::fromStdString(archive.meta().sources[0].reference), QStringLiteral("LD-1234"));
@@ -1696,6 +1785,7 @@ void AnalyseGuiTests::decodesCompressedCaptures()
     const auto temporary = [] { return QDir::temp().entryList({"rf-analyse-decoded-*"}, QDir::Dirs | QDir::NoDotAndDotDot).size(); };
     const int before = temporary();
     MainWindow w;
+    w.setAssumeLaserdisc(true);
     w.resize(1000, 700);
     // Opened without asking how to read it, and without decoding it to a file: the header gives the rate and the length,
     // and the samples are decoded where they are looked at.

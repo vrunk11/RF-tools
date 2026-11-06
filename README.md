@@ -45,6 +45,7 @@ rfx tag disc.rfx -o said.rfx --track 1 --copy 2 --capture-number 3 --face BA   #
 rfx pack --keep-tbc-curve -o disc.rfx a.ddd.s16 b.ddd.s16  # keep the TBC curve in the file (the speed of the disc, the time base correction)
 rfx tbc-curve disc.rfx                                 # the same for a file that is made: worked out from the RF, added at its end
 rfx merge -o all.rfx a.rfx:0,2 b.rfx                   # some tracks of a file only (file.rfx:0,2; none listed: all), copied as they are
+rfx tag disc.rfx -o said.rfx --source ld                  # what was captured, of the whole file: ld, vhs, vhd, cvbs (the TBC curve is for LaserDisc captures; --ld treats a capture whose source is not said as one)
 rfx check disc.rfx other.rfx                           # the integrity of the files: every track against its SHA-256 (nothing is written)
 ```
 

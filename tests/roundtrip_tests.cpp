@@ -18,6 +18,8 @@
 #include "packer.h"
 #include "rfsync.h"
 #include "sampleformat.h"
+#include "trackreader.h"
+#include "verify.h"
 
 #include <QDir>
 #include <QFile>
@@ -419,6 +421,7 @@ void testLikeKeepsTheTrack()
     rfx::PackOptions options = testOptions();
     options.pass0Dir = dir.filePath("p0");
     options.keepPass0 = true;
+    options.medium = std::string("ld");
     options.info.standard = std::string("pal");
     options.info.reference = std::string("LD-1234");
     options.info.copy = 2u;
@@ -548,6 +551,151 @@ void testCommandLine()
         CHECK(opened.meta().sources.size() == 2);
         CHECK(opened.meta().sources[1].name == "a.ddd.s16");
     }
+    // The source of the file: said with tag (the samples are copied as they are), asked about by info, and refused by the TBC curve unless it is a
+    // LaserDisc's (or the capture is told to be treated as one).
+    const QString tagged = dir.filePath("tagged.rfx");
+    CHECK(run({QStringLiteral("tag"), QStringLiteral("-o"), tagged, QStringLiteral("--source"), QStringLiteral("vhs"), ab}) == 0);
+    CHECK(rfx::Archive(tagged).meta().medium == "vhs");
+    CHECK(run({QStringLiteral("info"), tagged}, &said) == 0);
+    CHECK(said.contains(QStringLiteral("source: VHS")));
+    CHECK(run({QStringLiteral("tag"), QStringLiteral("-o"), dir.filePath("bad.rfx"), QStringLiteral("--source"), QStringLiteral("betamax"), ab}) == 2);
+    CHECK(run({QStringLiteral("tag"), QStringLiteral("-o"), dir.filePath("nothing.rfx"), ab}) == 2);
+    CHECK(run({QStringLiteral("tbc-curve"), tagged}) == 1);   // (a VHS tape has no TBC curve)
+    CHECK(run({QStringLiteral("tbc-curve"), ab}) == 1);       // (not said: only when told to treat it as a LaserDisc capture)
+    CHECK(run({QStringLiteral("check"), tagged}) == 0);
+    const QString merged2 = dir.filePath("merged-ld.rfx");
+    CHECK(run({QStringLiteral("merge"), QStringLiteral("-o"), merged2, QStringLiteral("--source"), QStringLiteral("ld"), ab, c}) == 0);
+    CHECK(rfx::Archive(merged2).meta().medium == "ld");
+}
+
+// What was captured is said of the whole file (a LaserDisc, a VHS tape...): written, kept by what is made from the file, and agreed between files that
+// are merged. The TBC curve is for LaserDisc captures: a file of another source (or that says none, without being told to treat it as one) has none.
+void testMedium()
+{
+    // (the values)
+    std::string out;
+    CHECK(rfx::parseMedium("LD", out) && out == "ld");
+    CHECK(rfx::parseMedium("vhs", out) && out == "vhs");
+    CHECK(rfx::parseMedium("vhd", out) && out == "vhd");
+    CHECK(rfx::parseMedium("CVBS", out) && out == "cvbs");
+    CHECK(rfx::parseMedium("unknown", out) && out.empty());
+    CHECK(rfx::parseMedium("", out) && out.empty());
+    CHECK(!rfx::parseMedium("betamax", out));
+    CHECK(rfx::mediumName("") == "unknown" && rfx::mediumName("ld") == "LD");
+    CHECK(rfx::mergedMedium({"ld", ""}) == "ld");
+    CHECK(rfx::mergedMedium({"", ""}).empty());
+    CHECK(rfx::mergedMedium({"ld", "vhs"}).empty());
+    CHECK(rfx::laserdiscWork("ld", false) && !rfx::laserdiscWork("", false) && rfx::laserdiscWork("", true) && !rfx::laserdiscWork("vhs", true));
+
+    QTemporaryDir dir;
+    const size_t samples = 1500000;
+    writeFile(dir.filePath("a.ddd.s16"), duplicatorCapture(samples, 0, 1));
+    writeFile(dir.filePath("b.ddd.s16"), duplicatorCapture(samples, 5, 2));
+    writeFile(dir.filePath("c.ddd.s16"), duplicatorCapture(samples, 9, 3));
+    rfx::PackOptions said = testOptions();
+    said.medium = std::string("ld");
+    const QString ld = dir.filePath("ld.rfx");
+    const QString plain = dir.filePath("plain.rfx");
+    const QString tape = dir.filePath("tape.rfx");
+    rfx::packCaptures({dir.filePath("a.ddd.s16"), dir.filePath("b.ddd.s16")}, ld, said);
+    rfx::packCaptures({dir.filePath("c.ddd.s16")}, plain, testOptions());
+    rfx::PackOptions vhs = testOptions();
+    vhs.medium = std::string("vhs");
+    rfx::packCaptures({dir.filePath("c.ddd.s16")}, tape, vhs);
+    CHECK(rfx::Archive(ld).meta().medium == "ld");
+    CHECK(rfx::Archive(plain).meta().medium.empty());
+    CHECK(rfx::Archive(tape).meta().medium == "vhs");
+    CHECK(rfx::archiveInfo(ld).find("source: LD") != std::string::npos);
+    CHECK(rfx::archiveInfo(plain).find("source: unknown") != std::string::npos);
+    CHECK(rfx::archiveYaml(ld).find("medium: \"ld\"") != std::string::npos);
+    CHECK(rfx::archiveYaml(plain).find("medium") == std::string::npos);
+
+    // what is made from files keeps what they say, when they agree
+    const auto mediumOf = [](const QString &file) { return rfx::Archive(file).meta().medium; };
+    rfx::assembleArchives({ld}, rfx::pickSome(ld, {1}), dir.filePath("extracted.rfx"), testOptions(), std::nullopt);
+    CHECK(mediumOf(dir.filePath("extracted.rfx")) == "ld");
+    rfx::assembleArchives({ld, plain}, rfx::pickAll({ld, plain}), dir.filePath("ld-plain.rfx"), testOptions(), std::nullopt);
+    CHECK(mediumOf(dir.filePath("ld-plain.rfx")) == "ld");   // (a file that says nothing is not against it)
+    rfx::assembleArchives({ld, tape}, rfx::pickAll({ld, tape}), dir.filePath("ld-tape.rfx"), testOptions(), std::nullopt);
+    CHECK(mediumOf(dir.filePath("ld-tape.rfx")).empty());    // (two sources: none is said)
+    // said again, of the whole file: another value, and none
+    rfx::PackOptions change = testOptions();
+    change.medium = std::string("vhd");
+    rfx::assembleArchives({ld}, rfx::pickAll({ld}), dir.filePath("changed.rfx"), change, std::nullopt);
+    CHECK(mediumOf(dir.filePath("changed.rfx")) == "vhd");
+    change.medium = std::string();
+    rfx::assembleArchives({ld}, rfx::pickAll({ld}), dir.filePath("cleared.rfx"), change, std::nullopt);
+    CHECK(mediumOf(dir.filePath("cleared.rfx")).empty());
+    // coded again against the file (what rf-requantize does): what was captured stays
+    rfx::packCapturesLike({dir.filePath("b.ddd.s16")}, ld, {1}, dir.filePath("like.rfx"), testOptions(), std::nullopt);
+    CHECK(mediumOf(dir.filePath("like.rfx")) == "ld");
+    // (the samples are as they were: the check passes)
+    for (const rfx::TrackCheck &c : rfx::verifyArchive(dir.filePath("changed.rfx"))) {
+        CHECK(c.ok);
+    }
+
+    // The TBC curve is for LaserDisc captures
+    QDir().mkpath(dir.filePath("p0"));
+    writeFile(dir.filePath("p0/pass0_0.txt"), pass0Dump(75, 20, 1000, 500));
+    writeFile(dir.filePath("p0/pass0_1.txt"), pass0Dump(75, 20, 1000, 495));
+    rfx::PackOptions curve = testOptions();
+    curve.pass0Dir = dir.filePath("p0");
+    curve.keepPass0 = true;
+    const auto curves = [&](const std::string &medium, bool assume) {
+        curve.medium = medium;
+        curve.assumeLaserdisc = assume;
+        const QString file = dir.filePath(QStringLiteral("curve-%1-%2.rfx").arg(QString::fromStdString(medium.empty() ? "none" : medium)).arg(assume));
+        rfx::packCaptures({dir.filePath("a.ddd.s16"), dir.filePath("b.ddd.s16")}, file, curve);
+        return rfx::Archive(file).pass0().size();
+    };
+    CHECK(curves("ld", false) == 2);
+    CHECK(curves("", true) == 2);    // (told to treat it as one)
+    CHECK(curves("", false) == 0);   // (not said, and not told: no curve)
+    CHECK(curves("vhs", true) == 0); // (another source: none, whatever is told)
+    // the work on a file that is made refuses what is not a LaserDisc's, and asks to be told for one that does not say
+    bool refused = false;
+    try {
+        rfx::keepPass0(plain, 40.0, true);
+    } catch (const rfx::Error &) {
+        refused = true;
+    }
+    CHECK(refused);
+    refused = false;
+    try {
+        rfx::keepPass0(tape, 40.0, true, nullptr, std::nullopt, true);
+    } catch (const rfx::Error &) {
+        refused = true;
+    }
+    CHECK(refused);
+
+    // the FLAC and raw variants say it too (they need ffmpeg)
+    rfx::PackOptions stored = testOptions();
+    stored.rateMhz = 40.0;
+    stored.medium = std::string("ld");
+    for (const rfx::StoredCodec codec : {rfx::StoredCodec::Raw, rfx::StoredCodec::Flac}) {
+        const QString file = dir.filePath(codec == rfx::StoredCodec::Raw ? "raw.rfx" : "flac.rfx");
+        try {
+            rfx::packFlac({dir.filePath("a.ddd.s16"), dir.filePath("b.ddd.s16")}, file, stored, codec);
+        } catch (const rfx::Error &) {
+            return;   // (no ffmpeg: said already by the other test)
+        }
+        std::string medium;
+        rfx::readFlacMeta(file, nullptr, &medium);
+        CHECK(medium == "ld");
+        CHECK(rfx::flacInfo(file).find("source: LD") != std::string::npos);
+        CHECK(rfx::TrackReader(file).meta().medium == "ld");
+        const QString copy = dir.filePath("stored-copy.rfx");
+        rfx::assembleArchives({file}, rfx::pickSome(file, {1}), copy, testOptions(), std::nullopt);
+        medium.clear();
+        rfx::readFlacMeta(copy, nullptr, &medium);
+        CHECK(medium == "ld");
+        rfx::PackOptions again = testOptions();
+        again.medium = std::string("cvbs");
+        rfx::assembleArchives({file}, rfx::pickAll({file}), copy, again, std::nullopt);
+        medium.clear();
+        rfx::readFlacMeta(copy, nullptr, &medium);
+        CHECK(medium == "cvbs");
+    }
 }
 
 int main()
@@ -560,6 +708,7 @@ int main()
     testLikeKeepsTheTrack();
     testSystemOfStandard();
     testCommandLine();
+    testMedium();
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;
