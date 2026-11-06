@@ -1255,10 +1255,10 @@ void Session::startRfSpeed(int only)
             std::shared_ptr<const RfData> data;
             if (!stale()) {
                 try {
-                    // NTSC first; a PAL capture gives no field as NTSC.
+                    // The system the standard of the track says first (NTSC when it says nothing); a PAL capture gives no field as NTSC.
                     m_rfPct[static_cast<size_t>(job.track)] = 0;
                     QMetaObject::invokeMethod(this, [this] { emit rfSpeedProgress(); }, Qt::QueuedConnection);
-                    for (const rfx::VideoSystem system : {rfx::VideoSystem::Ntsc, rfx::VideoSystem::Pal}) {
+                    for (const rfx::VideoSystem system : rfx::systemsToTry(job.reader->meta().sources[job.local].standard)) {
                         const std::vector<rfx::Field> fields = rfx::locateFields(*job.reader, job.local, job.rate, system, 0, &m_speedStop, [this, job](double done) {
                             const int percent = std::clamp(static_cast<int>(done * 100.0), 0, 100);
                             if (percent != m_rfPct[static_cast<size_t>(job.track)].exchange(percent)) {
@@ -1270,7 +1270,8 @@ void Session::startRfSpeed(int only)
                             curve = made;
                             data = std::make_shared<RfData>(RfData{fields, system == rfx::VideoSystem::Pal, job.rate});
                             break;
-                        }                        if (stale()) {
+                        }
+                        if (stale()) {
                             break;
                         }
                     }

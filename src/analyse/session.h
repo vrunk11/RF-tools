@@ -164,7 +164,7 @@ public:
     void setAligned(int k, bool on);
     // The curve is worked out (whether or not the graph of the speed shows it).
     bool curveReady(int k) const;
-    // Keep the curves that are worked out in the .rfx files they are of (File > Save speed curve): the number of tracks kept; the files
+    // Keep the curves that are worked out in the .rfx files they are of (File > Save TBC curve): the number of tracks kept; the files
     // that cannot take them are left alone. canSaveSpeed: there is such a file.
     bool canSaveSpeed() const;
     int saveSpeedCurves(QString *error);
