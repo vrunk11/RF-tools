@@ -354,15 +354,24 @@ DeviationBlock::DeviationBlock(Session *session, QWidget *parent) : QWidget(pare
         m_rfMode = on;
         // A lane: its track. The combined view: every track shown, the selected one first.
         const QVector<int> tracks = rfTracks();
-        for (int k : tracks) {
-            if (k == m_session->selected()) {
-                m_session->setRfSpeed(k, on);
+        {
+            Session::ActionScope scope(m_session);   // (one answer for every track)
+            for (int k : tracks) {
+                if (k == m_session->selected()) {
+                    m_session->setRfSpeed(k, on);
+                }
+            }
+            for (int k : tracks) {
+                if (k != m_session->selected()) {
+                    m_session->setRfSpeed(k, on);
+                }
             }
         }
-        for (int k : tracks) {
-            if (k != m_session->selected()) {
-                m_session->setRfSpeed(k, on);
-            }
+        // Refused (the work is for LaserDisc captures): the box goes back off, and the work is not asked for again at every change.
+        if (on && std::any_of(tracks.begin(), tracks.end(), [this](int k) { return !m_session->rfSpeed(k); })) {
+            m_rfMode = false;
+            const QSignalBlocker block(m_rfBox);
+            m_rfBox->setChecked(false);
         }
     });
     row->addWidget(m_rfBox);
@@ -414,10 +423,19 @@ DeviationBlock::DeviationBlock(Session *session, QWidget *parent) : QWidget(pare
         if (!m_rfMode) {
             return;
         }
-        for (int k : rfTracks()) {
-            if (!m_session->rfSpeed(k)) {
-                m_session->setRfSpeed(k, true);
+        {
+            Session::ActionScope scope(m_session);
+            for (int k : rfTracks()) {
+                if (!m_session->rfSpeed(k)) {
+                    m_session->setRfSpeed(k, true);
+                }
             }
+        }
+        const QVector<int> shown = rfTracks();
+        if (std::any_of(shown.begin(), shown.end(), [this](int k) { return !m_session->rfSpeed(k); })) {
+            m_rfMode = false;
+            const QSignalBlocker block(m_rfBox);
+            m_rfBox->setChecked(false);
         }
     });
     refresh();

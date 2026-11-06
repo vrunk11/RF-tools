@@ -179,6 +179,25 @@ public:
     // Asked before the work of a TBC curve (and what is made from it) is started for a track: when it answers false the work is not done. The window
     // asks whether to treat the capture as a LaserDisc, as that work is for LaserDisc captures.
     void setLaserdiscGate(std::function<bool(int)> gate) { m_gate = std::move(gate); }
+    // What the person answers to the gate lasts for one action: from the first call that may start the work of the curves to the end of the outermost
+    // scope (a window that does several calls for one thing, for several tracks, opens a scope around them). `end` is told when the action is over.
+    void setActionEnd(std::function<void()> end) { m_actionEnd = std::move(end); }
+    class ActionScope
+    {
+    public:
+        explicit ActionScope(Session *session) : m_session(session) { ++m_session->m_actionDepth; }
+        ~ActionScope()
+        {
+            if (--m_session->m_actionDepth == 0 && m_session->m_actionEnd) {
+                m_session->m_actionEnd();
+            }
+        }
+        ActionScope(const ActionScope &) = delete;
+        ActionScope &operator=(const ActionScope &) = delete;
+
+    private:
+        Session *m_session;
+    };
     // The work of the TBC curves waits, after its quick look, for the answer to the question those doubts make (standardsDoubtful): resumeCurves is the
     // answer when nothing is changed. abortCurves is the answer when the files are to be written: the work that started is stopped (it only looked
     // yet) and the tracks that were not finished are returned, to be asked for again (computeCurve) once the files are written.
@@ -337,6 +356,8 @@ private:
     // (what the quick look found, guarded by m_doubtMutex with the two below: tracks that have not looked yet, and the question is open)
     mutable std::mutex m_doubtMutex;
     std::function<bool(int)> m_gate;
+    std::function<void()> m_actionEnd;
+    int m_actionDepth = 0;
     bool allowed(int k) const { return !m_gate || m_gate(k); }
     std::atomic<int> m_detecting{0};
     bool m_asking = false;

@@ -304,6 +304,7 @@ MainWindow::MainWindow() : m_session(new Session(this))
     panelLayout->addLayout(trackButtons);
     connect(m_verifyTrack, &QPushButton::clicked, this, [this] { verifyTracks(m_session->selected()); });
     connect(m_computeTrack, &QPushButton::clicked, this, [this] {
+        Session::ActionScope scope(m_session);
         m_session->computeCurve(m_session->selected());
         updateVerify();
     });
@@ -602,9 +603,10 @@ MainWindow::MainWindow() : m_session(new Session(this))
         buildLanes();
     });
     m_session->setLaserdiscGate([this](int k) { return treatAsLaserdisc(k); });
+    // (a Yes is for the action it was given in: when that is over, or cancelled, the next one asks again)
+    m_session->setActionEnd([this] { m_assumedLaserdisc.clear(); });
     connect(m_session, &Session::closed, this, [this] {
         m_assumedLaserdisc.clear();
-        m_declinedLaserdisc.clear();
         m_openSources.clear();
         m_pages->setCurrentIndex(0);
         m_exportAction->setEnabled(false);
@@ -675,6 +677,7 @@ QCheckBox *MainWindow::alignBox(QWidget *parent)
     };
     // Align the tracks wanted that are not: after asking when some have no lines yet (False: not wanted, the box goes off).
     const auto apply = [this, box, wanted, mode, asking, sync] {
+        Session::ActionScope scope(m_session);   // (one answer for the whole of what Align capture does)
         const QVector<int> list = wanted();
         QVector<int> todo;
         QStringList missing;
@@ -688,6 +691,14 @@ QCheckBox *MainWindow::alignBox(QWidget *parent)
         }
         if (todo.isEmpty()) {
             return;
+        }
+        // The work is for LaserDisc captures: asked (or refused) before anything is started, and a refusal puts the box back off.
+        for (int k : todo) {
+            if (!treatAsLaserdisc(k)) {
+                *mode = false;
+                sync();
+                return;
+            }
         }
         if (!missing.isEmpty()) {
             *asking = true;
@@ -1955,21 +1966,17 @@ bool MainWindow::treatAsLaserdisc(int k)
     if (medium.empty() && m_assumeLaserdisc) {
         return true;
     }
-    if (m_declinedLaserdisc.contains(path)) {
-        return false;
-    }
+    // (a No is not remembered: it is asked again the next time the work is asked for)
     if (!medium.empty()) {
         QMessageBox::information(this, tr("TBC curve"), tr("The source of %1 is %2: the TBC curve (and the alignment, the stack and the speed from the RF, which are made from it) are for LaserDisc captures.")
                                                               .arg(QFileInfo(path).fileName(), QString::fromStdString(rfx::mediumName(medium))));
-        m_declinedLaserdisc.insert(path);
         return false;
     }
-    // (Yes is how the capture is read for this work, as long as the file is open: nothing is said in the file)
+    // (Yes is how the capture is read for this work (the action it was given in): nothing is said in the file)
     const auto answer = QMessageBox::question(this, tr("TBC curve"),
-                                              tr("The source of %1 is not said. The TBC curve is worked out for LaserDisc captures: treat it as a LaserDisc?").arg(QFileInfo(path).fileName()),
+                                              tr("The source of %1 is not said. The TBC curve is worked out for LaserDisc captures: treat it as a LaserDisc?\n\n(Yes is for this work only; nothing is written in the file.)").arg(QFileInfo(path).fileName()),
                                               QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
     if (answer != QMessageBox::Yes) {
-        m_declinedLaserdisc.insert(path);
         return false;
     }
     m_assumedLaserdisc.insert(path);

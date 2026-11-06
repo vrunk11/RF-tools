@@ -975,6 +975,7 @@ bool Session::rfSpeed(int k) const
 
 void Session::computeCurve(int k)
 {
+    ActionScope scope(this);
     if (k >= 0 && k < trackCount() && !curveReady(k) && allowed(k)) {
         startRfSpeed(k);
         emit rfSpeedProgress();   // (the list of tracks shows that it waits)
@@ -983,6 +984,7 @@ void Session::computeCurve(int k)
 
 void Session::setRfSpeed(int k, bool on)
 {
+    ActionScope scope(this);
     if (k < 0 || k >= trackCount() || on == rfSpeed(k)) {
         return;
     }
@@ -1155,6 +1157,7 @@ bool Session::aligned(int k) const
 // The time base of a track corrected by its speed (the same curve as the graph of the speed): asking for it asks for the curve.
 void Session::setAligned(int k, bool on)
 {
+    ActionScope scope(this);
     if (k < 0 || k >= trackCount() || on == aligned(k)) {
         return;
     }

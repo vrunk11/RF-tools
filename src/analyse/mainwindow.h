@@ -148,7 +148,6 @@ private:
     bool m_askingStandards = false;
     bool m_assumeLaserdisc = false;
     QSet<QString> m_assumedLaserdisc;
-    QSet<QString> m_declinedLaserdisc;
     void closeFile();
     // The name, the note and what is said of the disc and the signal, for the selected track: asked in a window, then written to its .rfx file.
     void editTrack();
