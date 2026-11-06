@@ -40,6 +40,8 @@
 #include <QListWidget>
 #include <QMenuBar>
 #include <QMessageBox>
+#include <QProgressDialog>
+#include <QThread>
 #include <QMimeData>
 #include <QPlainTextEdit>
 #include <QPushButton>
@@ -147,6 +149,25 @@ MainWindow::MainWindow()
     auto *title = new QLabel(tr("Tracks"), left);
     title->setForegroundRole(QPalette::PlaceholderText);
     leftLayout->addWidget(title);
+
+    // What was captured, of the whole list: the work of the TBC curve is for LaserDisc captures.
+    auto *sourceRow = new QHBoxLayout;
+    auto *sourceLabel = new QLabel(tr("Source"), left);
+    m_source = new QComboBox(left);
+    m_source->setObjectName(QStringLiteral("sourceCombo"));
+    m_source->addItem(tr("unknown"), QString());
+    m_source->addItem(tr("LD"), QStringLiteral("ld"));
+    m_source->addItem(tr("VHS"), QStringLiteral("vhs"));
+    m_source->addItem(tr("VHD"), QStringLiteral("vhd"));
+    m_source->addItem(tr("CVBS"), QStringLiteral("cvbs"));
+    m_source->setToolTip(tr("What was captured, for the whole file. The TBC curve is worked out for LaserDisc captures (LD); when it is unknown you are asked whether to treat the capture as one."));
+    sourceRow->addWidget(sourceLabel);
+    sourceRow->addWidget(m_source, 1);
+    leftLayout->addLayout(sourceRow);
+    connect(m_source, &QComboBox::currentIndexChanged, this, [this](int) {
+        m_assumeLaserdisc = false;
+        m_doc.setMedium(m_source->currentData().toString());
+    });
 
     m_listScroll = new QScrollArea(left);
     m_listScroll->setWidgetResizable(true);
@@ -479,8 +500,16 @@ void MainWindow::showInfo(bool shown)
     }
 }
 
+// The selector of the source shows what the list says.
+void MainWindow::syncSource()
+{
+    const QSignalBlocker blocker(m_source);
+    m_source->setCurrentIndex(std::max(0, m_source->findData(m_doc.medium())));
+}
+
 void MainWindow::rebuildList()
 {
+    syncSource();
     while (QLayoutItem *item = m_listLayout->takeAt(0)) {
         if (QWidget *w = item->widget()) {
             w->hide();
@@ -558,6 +587,7 @@ void MainWindow::pick(int index)
 
 void MainWindow::refreshInfo()
 {
+    syncSource();
     updateVerify();
     const bool has = m_picked >= 0 && m_picked < m_doc.count();
     const QSignalBlocker a(m_name);
@@ -772,6 +802,7 @@ void MainWindow::newList()
     if (!confirmDiscard()) {
         return;
     }
+    m_assumeLaserdisc = false;
     m_picked = -1;
     m_doc.clear();
 }
@@ -812,6 +843,7 @@ bool MainWindow::openArchive(const QString &path)
         return false;
     }
     QSettings().setValue(QStringLiteral("lastDir"), QFileInfo(path).absolutePath());
+    m_assumeLaserdisc = false;
     m_picked = m_doc.count() > 0 ? 0 : -1;
     readPass0State();
     return true;
@@ -852,6 +884,11 @@ bool MainWindow::process(const QString &output, const rfx::PackOptions *options)
         target = dialog.output();
         opts = dialog.options();
     }
+    // (the TBC curve is for LaserDisc captures: asked about when the source is not said, left out for another one)
+    if (opts.keepPass0 && m_doc.codec() == Codec::Rfx && !laserdiscWork()) {
+        opts.keepPass0 = false;
+    }
+    opts.assumeLaserdisc = opts.keepPass0;
     const Job job = m_doc.toJob(target, opts);
     // (asked for while the file is written: if the work is stopped, the question comes back at the end)
     m_curveWanted = opts.keepPass0 && m_doc.codec() == Codec::Rfx;
@@ -1023,9 +1060,37 @@ bool MainWindow::computePass0(bool ask, std::optional<size_t> only)
     return all;
 }
 
+bool MainWindow::laserdiscWork()
+{
+    const QString medium = m_doc.medium();
+    if (medium == QLatin1String("ld")) {
+        return true;
+    }
+    if (medium.isEmpty()) {
+        // (Yes is how the capture is read for this work, while this list is open: the source is not said in the file for it)
+        if (m_assumeLaserdisc) {
+            return true;
+        }
+        const auto answer = QMessageBox::question(this, tr("TBC curve"),
+                                                  tr("The source of this file is not said. The TBC curve is worked out for LaserDisc captures: treat this one as a LaserDisc?"),
+                                                  QMessageBox::Yes | QMessageBox::No, QMessageBox::Yes);
+        if (answer != QMessageBox::Yes) {
+            return false;
+        }
+        m_assumeLaserdisc = true;
+        return true;
+    }
+    QMessageBox::information(this, tr("TBC curve"),
+                             tr("The source of this file is %1: the TBC curve is only worked out for LaserDisc captures.").arg(QString::fromStdString(rfx::mediumName(medium.toStdString()))));
+    return false;
+}
+
 bool MainWindow::computePass0In(size_t arch, bool ask, std::optional<size_t> only)
 {
     if (arch >= m_doc.archives().size()) {
+        return false;
+    }
+    if (m_doc.codec() == Codec::Rfx && !laserdiscWork()) {
         return false;
     }
     const QString path = m_doc.archives()[arch];
@@ -1037,9 +1102,18 @@ bool MainWindow::computePass0In(size_t arch, bool ask, std::optional<size_t> onl
     Job job;
     job.archive = path;
     job.pass0Only = true;
+    job.options.assumeLaserdisc = true;   // (the list says LD; the file on disk may not yet)
     job.only = only;
     job.codec = m_doc.codec();
     job.options.order = rfx::OrderMode::Given;
+    // First, on its own: a quick look at the start of the tracks, which tells the system their lines are of. The tracks whose standard seems wrong are
+    // listed (to be changed if you want) before the long work starts.
+    if (job.codec == Codec::Rfx) {
+        const QMap<int, bool> pal = lookAtSystems(path, !only, only);
+        if (!pal.isEmpty()) {
+            askStandards(arch, pal);
+        }
+    }
     ProgressDialog progress(job, this);
     progress.setWindowTitle(tr("TBC curve of %1").arg(QFileInfo(path).fileName()));
     progress.start();
@@ -1052,31 +1126,57 @@ bool MainWindow::computePass0In(size_t arch, bool ask, std::optional<size_t> onl
     m_curveWanted = false;
     statusBar()->showMessage(tr("The TBC curve is kept in %1").arg(QDir::toNativeSeparators(path)), 8000);
     readPass0State();
-    checkStandards(arch, only);
     return true;
 }
 
-void MainWindow::checkStandards(size_t arch, std::optional<size_t> only)
+QMap<int, bool> MainWindow::lookAtSystems(const QString &path, bool onlyMissing, std::optional<size_t> only)
+{
+    auto found = std::make_shared<std::map<size_t, rfx::VideoSystem>>();
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    auto stop = std::make_shared<std::atomic<bool>>(false);
+    const double rate = rfx::PackOptions().rateMhz;
+    std::thread worker([=] {
+        try {
+            *found = rfx::lookAtSystems(path, rate, onlyMissing, stop.get(), only);
+        } catch (const std::exception &) {
+            // (the work says what is wrong with the file)
+        }
+        *done = true;
+    });
+    {
+        QProgressDialog busy(tr("Looking at the standard of the tracks..."), tr("Skip"), 0, 0, this);
+        busy.setWindowTitle(tr("TBC curve"));
+        busy.setWindowModality(Qt::WindowModal);
+        busy.setMinimumDuration(0);
+        while (!*done) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            if (busy.wasCanceled()) {
+                *stop = true;
+            }
+            QThread::msleep(20);
+        }
+        worker.join();
+    }
+    QMap<int, bool> pal;
+    if (!*stop) {
+        for (const auto &entry : *found) {
+            pal.insert(static_cast<int>(entry.first), entry.second == rfx::VideoSystem::Pal);
+        }
+    }
+    return pal;
+}
+
+void MainWindow::askStandards(size_t arch, const QMap<int, bool> &pal)
 {
     QList<StandardDoubt> doubts;
-    try {
-        const rfx::Archive archive(m_doc.archives()[arch]);
-        for (const auto &kept : archive.pass0()) {
-            if (only && kept.first != *only) {
-                continue;
-            }
-            for (int i = 0; i < m_doc.count(); ++i) {
-                const Entry &e = m_doc.at(i);
-                if (!e.fromArchive || e.removed || e.arch != arch || e.src != kept.first) {
-                    continue;
-                }
-                if (const auto suggestion = rfx::doubtedStandard(e.standard.toStdString(), kept.second.pal)) {
-                    doubts.push_back(StandardDoubt{e.name, i, e.standard, QString::fromStdString(*suggestion)});
-                }
-            }
+    for (int i = 0; i < m_doc.count(); ++i) {
+        const Entry &e = m_doc.at(i);
+        if (!e.fromArchive || e.removed || e.arch != arch || !pal.contains(static_cast<int>(e.src))) {
+            continue;
         }
-    } catch (const std::exception &) {
-        return;
+        if (const auto suggestion = rfx::doubtedStandard(e.standard.toStdString(), pal.value(static_cast<int>(e.src)))) {
+            doubts.push_back(StandardDoubt{e.name, i, e.standard, QString::fromStdString(*suggestion)});
+        }
     }
     if (doubts.isEmpty()) {
         return;

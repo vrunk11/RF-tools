@@ -81,6 +81,26 @@ std::vector<Entry> Document::entriesOf(const QString &path, size_t arch, bool *s
     return entries;
 }
 
+// What the file says was captured (empty: not said).
+static QString mediumOfFile(const QString &path)
+{
+    if (rfx::isFlacArchive(path)) {
+        std::string medium;
+        rfx::readFlacMeta(path, nullptr, &medium);
+        return QString::fromStdString(medium);
+    }
+    return QString::fromStdString(rfx::Archive(path).meta().medium);
+}
+
+void Document::setMedium(const QString &medium)
+{
+    if (medium == m_medium) {
+        return;
+    }
+    m_medium = medium;
+    touched();
+}
+
 bool Document::open(const QString &path, QString *error)
 {
     try {
@@ -92,6 +112,7 @@ bool Document::open(const QString &path, QString *error)
         m_archives = {path};
         m_opened = true;
         m_codec = stored ? (storedCodec == "raw" ? Codec::Raw : Codec::Flac) : Codec::Rfx;
+        m_medium = mediumOfFile(path);
         m_rateHz = m_entries.empty() ? 0.0 : m_entries.front().meta.rateHz;
         m_bits = m_entries.empty() ? 0 : static_cast<int>(m_entries.front().meta.bits);
         m_touched = false;
@@ -138,6 +159,15 @@ bool Document::addArchive(const QString &path, QString *error)
         }
         for (Entry &e : entries) {
             m_entries.push_back(std::move(e));
+        }
+        // (what the files say was captured: the one they all say; when they disagree, nothing)
+        {
+            std::vector<std::string> said;
+            if (!m_archives.empty()) {
+                said.push_back(m_medium.toStdString());
+            }
+            said.push_back(mediumOfFile(path).toStdString());
+            m_medium = QString::fromStdString(rfx::mergedMedium(said));
         }
         m_archives.push_back(path);
         m_touched = true;
@@ -214,6 +244,7 @@ void Document::clear()
     m_rateHz = 0.0;
     m_bits = 0;
     m_codec = Codec::Rfx;
+    m_medium.clear();
     m_touched = false;
     emit changed();
 }
@@ -345,6 +376,7 @@ Job Document::toJob(const QString &output, const rfx::PackOptions &options) cons
     }
     job.output = output;
     job.options = options;
+    job.options.medium = m_medium.toStdString();
     job.codec = m_codec;
     for (const Entry &e : m_entries) {
         if (e.removed) {

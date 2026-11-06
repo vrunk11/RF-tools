@@ -146,6 +146,10 @@ QByteArray jobToJson(const Job &job)
     opt["segment"] = static_cast<double>(job.options.segment);
     opt["verify"] = job.options.verify;
     opt["keep_pass0"] = job.options.keepPass0;
+    opt["assume_ld"] = job.options.assumeLaserdisc;
+    if (job.options.medium) {
+        opt["medium"] = QString::fromStdString(*job.options.medium);
+    }
     opt["rate_mhz"] = job.options.rateMhz;
     opt["device"] = job.options.device == rfx::Device::Gpu ? "gpu" : "cpu";
     opt["threads"] = static_cast<double>(job.options.threads);
@@ -227,6 +231,10 @@ Job jobFromJson(const QByteArray &json)
     job.options.segment = static_cast<size_t>(opt["segment"].toDouble(262144));
     job.options.verify = opt["verify"].toBool(true);
     job.options.keepPass0 = opt["keep_pass0"].toBool(false);
+    job.options.assumeLaserdisc = opt["assume_ld"].toBool(false);
+    if (opt.contains("medium")) {
+        job.options.medium = opt["medium"].toString().toStdString();
+    }
     job.options.rateMhz = opt["rate_mhz"].toDouble(75.0);
     job.options.device = opt["device"].toString() == QLatin1String("gpu") ? rfx::Device::Gpu : rfx::Device::Cpu;
     job.options.threads = static_cast<unsigned>(opt["threads"].toDouble(0));
@@ -313,7 +321,7 @@ void runJob(const Job &job)
             throw rfx::Error("nothing to work on: no .rfx file is open");
         }
         // (a track asked for by itself is worked out again; for the whole file, the tracks that have it are left as they are)
-        rfx::keepPass0(job.archive, job.options.rateMhz, !job.only, nullptr, job.only);
+        rfx::keepPass0(job.archive, job.options.rateMhz, !job.only, nullptr, job.only, job.options.assumeLaserdisc);
         return;
     }
     if (job.unpack) {
@@ -351,7 +359,7 @@ void runJob(const Job &job)
         rfx::assembleArchives({}, picks, job.output, job.options, std::nullopt);
         QDir(work).removeRecursively();
         if (job.options.keepPass0) {
-            rfx::keepPass0(job.output, job.options.rateMhz, true);
+            rfx::keepPass0(job.output, job.options.rateMhz, true, nullptr, std::nullopt, job.options.assumeLaserdisc);
         }
         return;
     }
@@ -359,7 +367,7 @@ void runJob(const Job &job)
         const std::vector<QString> &archives = allArchives;
         rfx::assembleArchives(archives, job.picks, job.output, job.options, std::nullopt);
         if (job.options.keepPass0) {
-            rfx::keepPass0(job.output, job.options.rateMhz, true);
+            rfx::keepPass0(job.output, job.options.rateMhz, true, nullptr, std::nullopt, job.options.assumeLaserdisc);
         }
         return;
     }

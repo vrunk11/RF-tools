@@ -63,6 +63,7 @@ class ProgressDialog : public QDialog
 {
     Q_OBJECT
 
+
 public:
     ProgressDialog(const Job &job, QWidget *parent = nullptr);
     ~ProgressDialog() override;

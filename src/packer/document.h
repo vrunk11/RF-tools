@@ -77,6 +77,9 @@ public:
     void clear();
 
     Codec codec() const { return m_codec; }
+    // What was captured, of the whole file (rfx::kMedia: "ld", "vhs", "vhd", "cvbs"; empty when not said). Written with the file.
+    QString medium() const { return m_medium; }
+    void setMedium(const QString &medium);
     void setCodec(Codec codec);
     // What the samples contain, said once for the whole list: the rate (Hz) and the bits they carry. It is read from the archive
     // that was opened and cannot be changed then; only a new list is told what its captures hold.
@@ -120,6 +123,7 @@ private:
     std::vector<Entry> m_entries;
     bool m_touched = false;
     Codec m_codec = Codec::Rfx;
+    QString m_medium;
     double m_rateHz = 0.0;
     int m_bits = 0;
 };

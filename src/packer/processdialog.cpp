@@ -302,6 +302,10 @@ void ProgressDialog::readOutput()
         static const QRegularExpression pass0(QStringLiteral("^pass 0 \\[(\\d+)/(\\d+)\\] (.+): (\\d+)%$"));
         static const QRegularExpression coding(QStringLiteral("^coding (.+): (\\d+)%$"));
         static const QRegularExpression verifying(QStringLiteral("^verify: (\\d+)%$"));
+        // (the quick look at the system of the lines is made by the window before the work, on its own; the work tells it too, for the command line)
+        if (line.startsWith(QLatin1String("systems:")) || line.contains(QLatin1String("the standard said is"))) {
+            continue;
+        }
         const QRegularExpressionMatch vf = verifying.match(line);
         if (vf.hasMatch()) {
             m_bar->setRange(0, 100);

@@ -52,8 +52,15 @@ public:
     // Locate the lines of the tracks of the opened file from their RF and keep them in it (the TBC curve), asking first.
     bool computePass0(bool ask = true, std::optional<size_t> only = std::nullopt);
     bool computePass0In(size_t arch, bool ask, std::optional<size_t> only);
-    // After a TBC curve is worked out: the tracks whose standard is not the one of their lines are listed, to be changed if the person wants.
-    void checkStandards(size_t arch, std::optional<size_t> only);
+    // The quick look at the start of the tracks of the file, on its own (the work of the TBC curve starts after it): the system their lines are of, by the number of the track in the file (true for PAL).
+    QMap<int, bool> lookAtSystems(const QString &path, bool onlyMissing, std::optional<size_t> only);
+    // Once the quick look found the system of the lines of some tracks of the file number `arch`: the tracks
+    // whose standard is not the one of their lines are listed, to be changed if the person wants.
+    void askStandards(size_t arch, const QMap<int, bool> &pal);
+    // Whether the work of the TBC curve is to be done: for a LaserDisc; for a source that is not said, asked (Yes says it is one: the list says LD);
+    // for another source, no (and why).
+    bool laserdiscWork();
+    void syncSource();
     // Check the tracks of the opened file (only: the track of the file with that number) against the checksums it keeps, by decoding them. Says what it
     // found, unless quiet; true when all is as packed.
     bool verify(std::optional<size_t> only, bool quiet = false);
@@ -110,6 +117,9 @@ private:
     QPushButton *m_pass0Track = nullptr;
     // What is said of the disc and the signal, for the track picked.
     QComboBox *m_standard = nullptr;
+    QComboBox *m_source = nullptr;
+    // The person said to read a capture whose source is not said as a LaserDisc one, while this list is open (nothing is written in the file for it).
+    bool m_assumeLaserdisc = false;
     QLineEdit *m_reference = nullptr;
     QSpinBox *m_copy = nullptr;
     QSpinBox *m_capture = nullptr;
