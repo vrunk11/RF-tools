@@ -9,9 +9,12 @@
  ******************************************************************************/
 
 #include "archive.h"
+#include "edit.h"
+#include "rfsync.h"
 #include "document.h"
 #include "flacmode.h"
 #include "job.h"
+#include "verify.h"
 #include "mainwindow.h"
 #include "packer.h"
 #include "processdialog.h"
@@ -109,6 +112,10 @@ private slots:
     void codecsAndTheFormatOfTheList();
     void unpacksAllAndOneTrack();
     void computesThePass0Curve();
+    void keepsThePass0OfWhatItPacks();
+    void mergesFilesWithoutCodingAgain();
+    void saysWhatTheDiscIs();
+    void checksTheTracksAgainstTheirChecksums();
     void panelOpensAndCloses();
 
 private:
@@ -347,6 +354,245 @@ void PackerTests::computesThePass0Curve()
     QVERIFY(w.findChild<QAction *>("computePass0"));
 }
 
+void PackerTests::saysWhatTheDiscIs()
+{
+    // The information panel says the standard, the reference, the copy, the face and the signal; they are written to the file (a track copied
+    // as it is keeps its blocks: only its description changes), and read back.
+    MainWindow w;
+    QVERIFY(w.openArchive(m_archive));
+    w.pick(1);
+    auto *standard = w.findChild<QComboBox *>("infoStandard");
+    auto *reference = w.findChild<QLineEdit *>("infoReference");
+    auto *copy = w.findChild<QSpinBox *>("infoCopy");
+    auto *captureNumber = w.findChild<QSpinBox *>("infoCapture");
+    auto *face = w.findChild<QComboBox *>("infoFace");
+    auto *cvbs = w.findChild<QPushButton *>("infoCvbs");
+    auto *yc = w.findChild<QPushButton *>("infoYc");
+    QVERIFY(standard && reference && copy && captureNumber && face && cvbs && yc);
+    QCOMPARE(standard->count(), 6);   // (not said, then PAL, NTSC, PAL-M, SECAM, NTSC-VHD)
+    QCOMPARE(face->count(), 5);       // (not said, then A, B, AB, BA)
+    QVERIFY(standard->isEnabled() && !w.document()->isChanged());
+    standard->setCurrentIndex(standard->findData(QStringLiteral("pal-m")));
+    reference->setText(QStringLiteral("LD-1234"));
+    QTest::keyClick(reference, Qt::Key_X);   // (typed: the text is taken from the box)
+    reference->setText(QStringLiteral("LD-1234"));
+    copy->setValue(2);
+    captureNumber->setValue(5);
+    face->setCurrentIndex(face->findData(QStringLiteral("BA")));
+    yc->click();
+    QVERIFY(yc->isChecked() && !cvbs->isChecked());
+    cvbs->click();
+    QVERIFY(cvbs->isChecked() && !yc->isChecked());
+    cvbs->click();   // (again: nothing said)
+    QVERIFY(!cvbs->isChecked() && !yc->isChecked());
+    yc->click();
+    const Entry &e = w.document()->at(1);
+    QCOMPARE(e.standard, QStringLiteral("pal-m"));
+    QCOMPARE(e.copy, 2);
+    QCOMPARE(e.captureNumber, 5);
+    QCOMPARE(e.face, QStringLiteral("BA"));
+    QCOMPARE(e.signal, QStringLiteral("yc"));
+    QVERIFY(w.document()->state(1) == EntryState::Edited);
+    QVERIFY(w.document()->state(0) == EntryState::Kept);
+    const Job job = w.document()->toJob(m_dir.filePath("said.rfx"), options());
+    QVERIFY(job.picks[1].edit.info.standard && *job.picks[1].edit.info.standard == "pal-m");
+    QVERIFY(!job.picks[0].edit.info.any());
+    const Job back = jobFromJson(jobToJson(job));
+    QVERIFY(back.picks[1].edit.info.copy && *back.picks[1].edit.info.copy == 2);
+    QVERIFY(w.process(m_dir.filePath("said.rfx"), nullptr));
+    const rfx::Archive archive(m_dir.filePath("said.rfx"));
+    const rfx::SourceMeta &said = archive.meta().sources[1];
+    QCOMPARE(QString::fromStdString(said.standard), QStringLiteral("pal-m"));
+    QCOMPARE(said.copy, 2u);
+    QCOMPARE(said.capture, 5u);   // (the copy of the disc and the number of the capture are two things)
+    QCOMPARE(QString::fromStdString(said.face), QStringLiteral("BA"));
+    QCOMPARE(QString::fromStdString(said.signal), QStringLiteral("yc"));
+    QVERIFY(!archive.meta().sources[0].hasInfo());
+    // (what the window was changed to is what it shows now)
+    QCOMPARE(w.findChild<QComboBox *>("infoFace")->currentData().toString(), QStringLiteral("BA"));
+    // The values are the library's: parsed from what a person types, whatever the case.
+    std::string value;
+    QVERIFY(rfx::parseStandard("NTSC-VHD", value) && value == "ntsc-vhd");
+    QVERIFY(rfx::parseFace("ab", value) && value == "AB");
+    QVERIFY(rfx::parseSignal("Y/C", value) && value == "yc");
+    QVERIFY(!rfx::parseStandard("pal-n", value) && !rfx::parseFace("C", value) && !rfx::parseSignal("rgb", value));
+}
+void PackerTests::mergesFilesWithoutCodingAgain()
+{
+    const auto size = [](const QString &path) { return QFileInfo(path).size(); };
+    // Files of the predictor, a track each: the list takes the tracks of the second file, and what is written has the blocks of both as they were.
+    const QString one = m_dir.filePath("one.rfx");
+    const QString two = m_dir.filePath("two-alone.rfx");
+    rfx::packCaptures({m_dir.filePath("a.ddd.s16")}, one, options());
+    rfx::packCaptures({m_dir.filePath("c.ddd.s16")}, two, options());
+    {
+        MainWindow w;
+        QVERIFY(w.openArchive(one));
+        QCOMPARE(w.document()->archives().size(), size_t(1));
+        QVERIFY(w.addCaptures({two}));
+        QCOMPARE(w.document()->count(), 2);
+        QCOMPARE(w.document()->archives().size(), size_t(2));
+        QCOMPARE(w.document()->at(1).arch, size_t(1));
+        // (both are as they were: copied)
+        QVERIFY(w.document()->state(0) == EntryState::Kept && w.document()->state(1) == EntryState::Kept);
+        QVERIFY(w.document()->isChanged());
+        // A file twice, or a file of the other variant, is refused.
+        QString error;
+        QVERIFY(!w.document()->addArchive(two, &error));
+        QVERIFY(!error.isEmpty());
+        // The job names the two files; written to a new file, the blocks are copied (no coding: the sizes add up).
+        const Job job = w.document()->toJob(m_dir.filePath("merged.rfx"), options());
+        QCOMPARE(job.extraArchives.size(), 1);
+        QCOMPARE(job.picks[1].arch, size_t(1));
+        QVERIFY(jobFromJson(jobToJson(job)).picks[1].arch == 1);
+        QVERIFY(w.process(m_dir.filePath("merged.rfx"), nullptr));
+        QVERIFY(std::abs(size(m_dir.filePath("merged.rfx")) - (size(one) + size(two))) < 2000);
+        const std::vector<rfx::TrackCheck> checks = rfx::verifyArchive(m_dir.filePath("merged.rfx"));
+        QCOMPARE(checks.size(), size_t(2));
+        QVERIFY(checks[0].ok && checks[1].ok);
+    }
+    // The same for the FLAC and the raw variants: the streams are copied (ffmpeg -c copy), nothing is decoded or encoded.
+    for (const rfx::StoredCodec codec : {rfx::StoredCodec::Flac, rfx::StoredCodec::Raw}) {
+        const bool raw = codec == rfx::StoredCodec::Raw;
+        const QString a = m_dir.filePath(raw ? "raw-a.rfx" : "flac-a.rfx");
+        const QString b = m_dir.filePath(raw ? "raw-b.rfx" : "flac-b.rfx");
+        try {
+            rfx::PackOptions o = options();
+            o.rateMhz = 40.0;
+            rfx::packFlac({m_dir.filePath("a.ddd.s16")}, a, o, codec);
+            rfx::packFlac({m_dir.filePath("c.ddd.s16")}, b, o, codec);
+        } catch (const std::exception &) {
+            QSKIP("ffmpeg is not available");
+        }
+        MainWindow w;
+        QVERIFY(w.openArchive(a));
+        QVERIFY(w.addCaptures({b}));
+        QCOMPARE(w.document()->count(), 2);
+        QVERIFY(w.document()->codec() == (raw ? Codec::Raw : Codec::Flac));
+        QString error;
+        QVERIFY(!w.document()->addArchive(one, &error));   // (a file of the predictor with files of the other variant)
+        const QString merged = m_dir.filePath(raw ? "raw-merged.rfx" : "flac-merged.rfx");
+        QVERIFY(w.process(merged, nullptr));
+        QVERIFY(rfx::isFlacArchive(merged));
+        QCOMPARE(rfx::readFlacMeta(merged).size(), size_t(2));
+        QVERIFY(std::abs(size(merged) - (size(a) + size(b))) < 4000);
+        const std::vector<rfx::TrackCheck> checks = rfx::verifyArchive(merged);
+        QCOMPARE(checks.size(), size_t(2));
+        QVERIFY2(checks[0].ok && checks[1].ok, "the samples differ after a stream copy");
+    }
+}
+
+void PackerTests::keepsThePass0OfWhatItPacks()
+{
+    // Packing with keepPass0: the lines located for the lag tables are kept as they are, for every track.
+    rfx::PackOptions pack = options();
+    pack.pass0Dir = m_dir.filePath("p0");
+    pack.order = rfx::OrderMode::Given;
+    pack.keepPass0 = true;
+    const QString kept = m_dir.filePath("kept.rfx");
+    rfx::packCaptures({m_dir.filePath("a.ddd.s16"), m_dir.filePath("b.ddd.s16")}, kept, pack);
+    {
+        const rfx::Archive a(kept);
+        QCOMPARE(a.pass0().size(), size_t(2));
+        // (to the bit: the dump written back from the file is the one that was read)
+        QCOMPARE(rfx::formatPass0(a.pass0().at(0).fields), rfx::formatPass0(rfx::parsePass0(m_dir.filePath("p0/pass0_0.txt"))));
+        QCOMPARE(rfx::formatPass0(a.pass0().at(1).fields), rfx::formatPass0(rfx::parsePass0(m_dir.filePath("p0/pass0_1.txt"))));
+    }
+    // Without it, none (the archive of the tests has none).
+    {
+        const rfx::Archive a(m_archive);
+        QVERIFY(a.pass0().empty());
+    }
+    // A track copied into another file takes its lines with it, whether or not they are asked for again.
+    const QString first = m_dir.filePath("first-only.rfx");
+    rfx::assembleArchives({kept}, rfx::pickSome(kept, {0}), first, options(), std::nullopt);
+    {
+        const rfx::Archive a(first);
+        QCOMPARE(a.meta().sources.size(), size_t(1));
+        QCOMPARE(a.pass0().size(), size_t(1));
+    }
+    // The window: what the information says of the track, and the button of the track (the work is of that track alone).
+    {
+        MainWindow w;
+        QVERIFY(w.openArchive(kept));
+        w.pick(1);
+        auto *facts = w.findChild<QLabel *>("infoFacts");
+        QVERIFY(facts && facts->text().contains(QStringLiteral("TBC curve")) && facts->text().contains(QStringLiteral("kept (")));
+        auto *button = w.findChild<QPushButton *>("pass0Track");
+        QVERIFY(button && button->isEnabled());
+        QVERIFY(w.computePass0(false, size_t(1)));
+        QVERIFY(w.openArchive(m_archive));
+        w.pick(0);
+        QVERIFY(w.findChild<QLabel *>("infoFacts")->text().contains(QStringLiteral("not kept")));
+    }
+    // The lines of the tracks of a file as it is: located and kept, then left as they are.
+    QCOMPARE(rfx::keepPass0(first, 40.0, true), size_t(0));
+}
+
+void PackerTests::checksTheTracksAgainstTheirChecksums()
+{
+    // The library: every track decodes to what was packed.
+    const std::vector<rfx::TrackCheck> checks = rfx::verifyArchive(m_archive);
+    QCOMPARE(checks.size(), size_t(2));
+    for (const rfx::TrackCheck &c : checks) {
+        QVERIFY2(c.ok && c.checked, c.detail.c_str());
+    }
+    const std::vector<rfx::TrackCheck> one = rfx::verifyArchive(m_archive, size_t(1));
+    QCOMPARE(one.size(), size_t(1));
+    QCOMPARE(one[0].track, size_t(1));
+    QVERIFY(one[0].ok);
+    bool refused = false;
+    try {
+        rfx::verifyArchive(m_archive, size_t(7));
+    } catch (const std::exception &) {
+        refused = true;
+    }
+    QVERIFY(refused);
+
+    // A byte changed in the coded samples: said, whatever the track it is in.
+    const QString damaged = m_dir.filePath("damaged.rfx");
+    QVERIFY(QFile::copy(m_archive, damaged));
+    {
+        QFile f(damaged);
+        QVERIFY(f.open(QIODevice::ReadWrite));
+        const qint64 at = f.size() - 200;
+        f.seek(at);
+        char byte = 0;
+        QVERIFY(f.read(&byte, 1) == 1);
+        byte = static_cast<char>(byte ^ 0x5A);
+        f.seek(at);
+        QVERIFY(f.write(&byte, 1) == 1);
+    }
+    const std::vector<rfx::TrackCheck> bad = rfx::verifyArchive(damaged);
+    QVERIFY(std::any_of(bad.begin(), bad.end(), [](const rfx::TrackCheck &c) { return !c.ok; }));
+
+    // The window of progress is the bar and what it says, with no empty log under it until the work has something to say.
+    {
+        Job job;
+        job.archive = m_archive;
+        job.verify = true;
+        ProgressDialog progress(job);
+        auto *log = progress.findChild<QPlainTextEdit *>();
+        QVERIFY(log);
+        QVERIFY(log->isHidden());
+    }
+
+    // The window: the buttons are there once a file is open, and the work runs in the program again, so that it can be stopped.
+    MainWindow w;
+    auto *all = w.findChild<QPushButton *>("verifyAll");
+    auto *track = w.findChild<QPushButton *>("verifyTrack");
+    QVERIFY(all && track);
+    QVERIFY(!w.verify(std::nullopt, true));
+    QVERIFY(w.openArchive(m_archive));
+    w.pick(1);
+    QVERIFY(all->isEnabled() && track->isEnabled());
+    QVERIFY(w.verify(std::nullopt, true));
+    QVERIFY(w.verify(size_t(1), true));
+    QVERIFY(w.findChild<QAction *>("verifyFile"));
+    QVERIFY(w.openArchive(damaged));
+    QVERIFY(!w.verify(std::nullopt, true));
+}
+
 void PackerTests::codecsAndTheFormatOfTheList()
 {
     {
@@ -441,7 +687,7 @@ void PackerTests::panelOpensAndCloses()
     const auto buttons = w.findChildren<QPushButton *>();
     QPushButton *toggle = nullptr;
     for (QPushButton *b : buttons) {
-        if (b->isCheckable()) {
+        if (b->isCheckable() && b->text() == QLatin1String("Info")) {
             toggle = b;
         }
     }

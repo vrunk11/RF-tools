@@ -12,6 +12,7 @@
 #include "appearancemenus.h"
 #include "archive.h"
 #include "rfsync.h"
+#include "verify.h"
 #include "capturedialog.h"
 #include "deviationview.h"
 #include "ffmpeg.h"
@@ -34,6 +35,7 @@
 #include <QDropEvent>
 #include <QUrl>
 #include <QMenuBar>
+#include <QPushButton>
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QDir>
@@ -150,6 +152,9 @@ private slots:
     void compactModeAndSpectrumControls();
     void decodesCompressedCaptures();
     void alignsRealCaptures();
+    void showsWhatTheDiscIs();
+    void editsATrackInItsFile();
+    void checksTheTracksAgainstTheirChecksums();
     void alignsASubsetOfTheTracks();
     void speedFromTheRf();
     void showsTheSidecarOfACapture();
@@ -586,11 +591,15 @@ void AnalyseGuiTests::opensARawCapture()
     {
         QTreeWidgetItem *capture = panel->topLevelItem(1);
         QCOMPARE(capture->text(0), QStringLiteral("Capture"));
-        QCOMPARE(capture->childCount(), 3);
+        QCOMPARE(capture->childCount(), 9);
         const auto value = [&](int row) { return panel->itemWidget(capture->child(row), 0)->toolTip(); };
         QVERIFY2(value(0).contains("2026-10-27 07:33:55") && value(0).contains("07:34:05") && value(0).contains("10.8 s"), qPrintable(value(0)));
         QVERIFY(!value(1).isEmpty() && value(1) != QStringLiteral("not recorded"));
-        QCOMPARE(value(2), QStringLiteral("none"));
+        // (the disc and the signal: nothing was said)
+        for (int row = 2; row <= 7; ++row) {
+            QCOMPARE(value(row), QStringLiteral("not said"));
+        }
+        QCOMPARE(value(8), QStringLiteral("none"));
     }
     auto *deviation = w.findChild<DeviationBlock *>("combinedDeviation")->findChild<DeviationView *>();
     QVERIFY(deviation->curves().isEmpty());
@@ -1276,6 +1285,29 @@ void AnalyseGuiTests::speedFromTheRf()
         kept.setRfSpeed(true);
         QVERIFY2(std::fabs(kept.speedAt(0, 2000000) - 1000.0) < 25.0, qPrintable(QString::number(kept.speedAt(0, 2000000))));
         kept.close();
+        // Compute TBC curve: the curve is worked out without the graph of the speed being asked for, and the list of tracks can show how far it is.
+        const QString computed = m_dir.filePath("fast-compute.rfx");
+        rfx::packCaptures({path}, computed, pack);
+        Session worked;
+        QVERIFY2(worked.open(computed, &error), qPrintable(error));
+        QVERIFY(!worked.curveReady(0));
+        QCOMPARE(worked.rfProgressOf(0), -1);
+        worked.computeCurve(0);
+        QVERIFY(worked.rfProgressOf(0) != -1);
+        QElapsedTimer working;
+        working.start();
+        while (!worked.curveReady(0) && working.elapsed() < 60000) {
+            QTest::qWait(20);
+        }
+        QVERIFY(worked.curveReady(0));
+        QVERIFY(!worked.rfSpeed(0));
+        QTRY_COMPARE(worked.rfProgressOf(0), -1);
+        // What is worked out and is not in the file is what is lost when it is closed: counted until it is kept.
+        QCOMPARE(worked.unsavedCurves(), 1);
+        QString keepError;
+        QCOMPARE(worked.saveSpeedCurves(&keepError), 1);
+        QCOMPARE(worked.unsavedCurves(), 0);
+        worked.close();
     }
     session->close();
 }
@@ -1418,6 +1450,138 @@ void AnalyseGuiTests::alignsASubsetOfTheTracks()
     QVERIFY(!s.result().pastEnd[2]);
 }
 
+void AnalyseGuiTests::checksTheTracksAgainstTheirChecksums()
+{
+    MainWindow w;
+    w.resize(1100, 800);
+    QVERIFY(w.openFile(m_archive));
+    // The folder of what was opened is remembered, for the next dialog to start in.
+    QCOMPARE(QSettings().value(QStringLiteral("lastDir")).toString(), QFileInfo(m_archive).absolutePath());
+    w.show();
+    auto *session = w.findChild<Session *>();
+    QVERIFY(settle(*session));
+    // The buttons and the menu item are there, the one of the track for a track of a file.
+    auto *all = w.findChild<QPushButton *>("verifyAll");
+    auto *track = w.findChild<QPushButton *>("verifyTrack");
+    QVERIFY(all && track && all->isEnabled() && track->isEnabled());
+    QVERIFY(w.findChild<QAction *>("verifyFile")->isEnabled());
+    // Compute TBC curve, beside Check this track: it starts the work for the selected track, and the list of tracks shows it.
+    auto *compute = w.findChild<QPushButton *>("computeTrack");
+    QVERIFY(compute && compute->isEnabled());
+    compute->click();
+    QVERIFY(session->rfProgressOf(session->selected()) != -1);
+    QTRY_COMPARE_WITH_TIMEOUT(session->rfProgressOf(session->selected()), -1, 30000);
+    QVERIFY(w.verifyTracks(std::nullopt, true));
+    QVERIFY(w.verifyTracks(1, true));
+
+    // A byte changed in what is coded: said.
+    const QString damaged = m_dir.filePath("damaged-for-check.rfx");
+    QVERIFY(QFile::copy(m_archive, damaged));
+    {
+        QFile f(damaged);
+        QVERIFY(f.open(QIODevice::ReadWrite));
+        const qint64 at = f.size() - 200;
+        f.seek(at);
+        char byte = 0;
+        QVERIFY(f.read(&byte, 1) == 1);
+        byte = static_cast<char>(byte ^ 0x5A);
+        f.seek(at);
+        QVERIFY(f.write(&byte, 1) == 1);
+    }
+    QVERIFY(w.openFile(damaged));
+    QVERIFY(settle(*session));
+    QVERIFY(!w.verifyTracks(std::nullopt, true));
+
+    // A capture on its own keeps no checksum: nothing to check, and the buttons are greyed.
+    rfx::CaptureSpec spec;
+    spec.format = rfx::SampleFormat::S16;
+    spec.rateHz = 40e6;
+    QVERIFY(w.openCapture(m_dir.filePath("a.ddd.s16"), spec));
+    QVERIFY(settle(*session));
+    QVERIFY(!all->isEnabled() && !track->isEnabled());
+    QVERIFY(!w.verifyTracks(std::nullopt, true));
+}
+
+void AnalyseGuiTests::editsATrackInItsFile()
+{
+    // Edit, beside Check and Compute: the note and what is said of the disc are written to the .rfx file (written again, its samples copied as
+    // they are), and the files are open again with the same track selected.
+    const QString copy = m_dir.filePath("to-edit.rfx");
+    QVERIFY(QFile::copy(m_archive, copy));
+    const qint64 before = QFileInfo(copy).size();
+    MainWindow w;
+    w.resize(1100, 800);
+    QVERIFY(w.openFile(copy));
+    auto *session = w.findChild<Session *>();
+    QVERIFY(settle(*session));
+    session->setSelected(1);
+    auto *button = w.findChild<QPushButton *>("editTrack");
+    QVERIFY(button && button->isEnabled());
+    rfx::TrackEdit edit;
+    edit.notes = std::string("Pioneer, side A");
+    edit.info.standard = std::string("ntsc-vhd");
+    edit.info.copy = 3u;
+    edit.info.capture = 7u;
+    edit.info.face = std::string("BA");
+    edit.info.signal = std::string("cvbs");
+    QVERIFY(w.rewriteTrack(1, edit, true));
+    QVERIFY(settle(*session));
+    QCOMPARE(session->trackCount(), 2);
+    QCOMPARE(session->selected(), 1);
+    QCOMPARE(QString::fromStdString(session->track(1).notes), QStringLiteral("Pioneer, side A"));
+    QCOMPARE(QString::fromStdString(session->track(1).standard), QStringLiteral("ntsc-vhd"));
+    QCOMPARE(session->track(1).copy, 3u);
+    QCOMPARE(session->track(1).capture, 7u);
+    QVERIFY(session->track(0).notes.empty() && !session->track(0).hasInfo());
+    // (nothing was coded again: the file is as large as it was, plus a few words)
+    QVERIFY(std::abs(QFileInfo(copy).size() - before) < 4000);
+    QVERIFY(!QFileInfo::exists(m_dir.filePath("to-edit.edit.rfx")));
+    const std::vector<rfx::TrackCheck> checks = rfx::verifyArchive(copy);
+    QVERIFY(checks.size() == 2 && checks[0].ok && checks[1].ok);
+    // A capture on its own cannot be said anything of.
+    rfx::CaptureSpec spec;
+    spec.format = rfx::SampleFormat::S16;
+    spec.rateHz = 40e6;
+    QVERIFY(w.openCapture(m_dir.filePath("a.ddd.s16"), spec));
+    QVERIFY(settle(*session));
+    QVERIFY(!button->isEnabled());
+    QVERIFY(!w.rewriteTrack(0, edit, true));
+}
+void AnalyseGuiTests::showsWhatTheDiscIs()
+{
+    // What a person said of the disc and the signal when the file was made, in the panel of the source.
+    rfx::PackOptions pack;
+    pack.threads = 2;
+    pack.order = rfx::OrderMode::Given;
+    pack.segment = 65536;
+    pack.info.standard = std::string("ntsc");
+    pack.info.reference = std::string("LD-1234");
+    pack.info.copy = 2u;
+    pack.info.capture = 4u;
+    pack.info.face = std::string("AB");
+    pack.info.signal = std::string("yc");
+    const QString said = m_dir.filePath("said.rfx");
+    rfx::packCaptures({m_dir.filePath("a.ddd.s16")}, said, pack);
+    MainWindow w;
+    w.resize(1000, 700);
+    QVERIFY(w.openFile(said));
+    auto *session = w.findChild<Session *>();
+    QVERIFY(settle(*session));
+    auto *panel = w.findChild<MetadataPanel *>("metadataPanel");
+    QTreeWidgetItem *capture = panel->topLevelItem(1);
+    QCOMPARE(capture->text(0), QStringLiteral("Capture"));
+    const auto value = [&](int row) { return panel->itemWidget(capture->child(row), 0)->toolTip(); };
+    QCOMPARE(value(2), QStringLiteral("NTSC"));
+    QCOMPARE(value(3), QStringLiteral("LD-1234"));
+    QCOMPARE(value(4), QStringLiteral("2"));   // (the copy of the disc)
+    QCOMPARE(value(5), QStringLiteral("4"));   // (the capture)
+    QCOMPARE(value(6), QStringLiteral("AB"));
+    QCOMPARE(value(7), QStringLiteral("Y/C"));
+    // (in the metadata too, read back as it was written)
+    const rfx::Archive archive(said);
+    QCOMPARE(QString::fromStdString(archive.meta().sources[0].reference), QStringLiteral("LD-1234"));
+    QVERIFY(rfx::archiveYaml(said).find("signal: \"yc\"") != std::string::npos);
+}
 void AnalyseGuiTests::decodesCompressedCaptures()
 {
     // A FLAC as ld-decode writes it: the rate in kHz in its header (40000 for 40 MHz).

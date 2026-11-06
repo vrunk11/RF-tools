@@ -126,13 +126,19 @@ the value given:
 | `notes` | string | a note about the capture, free text for people, UTF-8; written only when it is not empty (default empty) |
 | `bits` | integer | the bits the samples carry (the rest of each 16-bit sample is zero), as the person who packed it says it; written only when given (default absent, 0) |
 | `file_time` | string | when the file the capture was read from was last changed, as UTC in ISO 8601 (`"2023-05-16T18:03:54Z"`), taken when it was packed; written only when known (default absent) |
+| `standard` | string | the video standard of the disc, as a person said it: `"pal"`, `"ntsc"`, `"pal-m"`, `"secam"` or `"ntsc-vhd"`; written only when said (default absent) |
+| `reference` | string | a reference of the disc (a catalogue number, a title...), free text; written only when said (default absent) |
+| `copy` | integer | the number of the **physical copy** of the disc (the exemplar) the capture was made from, 1 or more; written only when said (default absent) |
+| `capture` | integer | the number of the **capture** itself, 1 or more (one copy of a disc can be captured several times: it is not the number of the copy); written only when said (default absent) |
+| `face` | string | the face of the disc: `"A"`, `"B"`, `"AB"` or `"BA"` (both, in that order, in the capture); written only when said (default absent) |
+| `signal` | string | what was captured: `"cvbs"` (composite) or `"yc"` (separate luma and chroma); written only when said (default absent) |
 
 Unknown fields are ignored. Tools that only want the metadata (`rfx info`,
 `rfx info --yaml`, `rfx unpack --meta`) read this one block and nothing else.
 
-### 3.1 Pass 0 of the tracks (optional)
+### 3.1 The TBC curve: pass 0 of the tracks (optional)
 
-An archive may keep what pass 0 found in the RF of its tracks: the fields, with their frame codes and the place of each line. From it the
+An archive may keep the **TBC curve** of its tracks, that is what pass 0 found in their RF: the fields, with their frame codes and the place of each line. From it the
 speed of the disc and the time base correction are made, with no need to read the samples again (it takes minutes on a large capture). It
 is in an extra **cluster of the metadata track** (track number `n + 1`) with the timestamp **1**, usually at the end of the file (a tool
 adds it by appending, without rewriting the archive); when there are several, the last one counts. Its block holds one JSON object:
@@ -143,7 +149,7 @@ adds it by appending, without rewriting the archive); when there are several, th
 ```
 
 `track` counts from 0; `system` is `"ntsc"` or `"pal"`; each field has the parity (`first`, 1 for a first field), its frame code when pass 0
-read one (`code`, the text pass 0 writes, absent otherwise) and the sample position of each of its lines (`lines`, rounded to 0.01 sample,
+read one (`code`, the text pass 0 writes, absent otherwise) and the sample position of each of its lines (`lines`, as the 64-bit numbers pass 0 finds them, written so that they read back the same to the bit,
 increasing; the record of a field may carry lines past its own, which the next field repeats).
 
 The speed of the disc is the spacing of the lines of a field against the nominal line length (63.556 us NTSC, 64 us PAL) at the rate of the
@@ -158,7 +164,7 @@ fast the same way, the tables show nothing. The lines of pass 0 are measured on 
 so the speed and the time base correction made from them are absolute. A tool that wants to correct the time base of a capture needs them,
 never the lag table.
 
-A reader that does not know the block ignores it (the metadata is the block of timestamp 0).
+The block is written by `rfx pack --keep-pass0`, by `rfx keep-pass0` on a file that is made (appended, nothing else rewritten) and by rf-packer; a tool that writes another archive from some of its tracks carries the lines of the tracks it copies along with them. A reader that does not know the block ignores it (the metadata is the block of timestamp 0).
 ## 4. The map
 
 The map track holds the **lag tables**. Each map cluster (timestamp `0, 1, 2, ...`,
