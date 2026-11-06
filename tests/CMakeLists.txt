@@ -25,6 +25,8 @@ endif()
 
 add_executable(rfx-roundtrip-tests roundtrip_tests.cpp)
 target_link_libraries(rfx-roundtrip-tests PRIVATE rfx-library Qt6::Core)
+target_compile_definitions(rfx-roundtrip-tests PRIVATE RFX_PROGRAM="$<TARGET_FILE:rfx>")
+add_dependencies(rfx-roundtrip-tests rfx)
 add_test(NAME rfx-roundtrip-tests COMMAND rfx-roundtrip-tests)
 set_tests_properties(rfx-roundtrip-tests PROPERTIES LABELS unit)
 

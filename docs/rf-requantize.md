@@ -80,7 +80,7 @@ The output is coded again as the input was. The FLAC and the raw variants of `.r
 ld-decode either). For the predictor variant: Requantising changes the value of the samples, not
 their place, so the lines are where they were: the **lag tables are kept, not worked out
 again**, with the references, the weights, the predictor parameters, the segment length, the
-`.yaml` files and the sample rates of each track. No pass 0 is run and ld-decode is not needed.
+`.yaml` files, the sample rates, the notes, what was said of the disc and the TBC curve of each track (the curve belongs to the track and the lines do not move, so it stays with it, as long as the track is kept). No pass 0 is run and ld-decode is not needed.
 With `--only`, a track keeps the references that are among the tracks taken. The bits that were
 dropped are zero bits, which the `shift` of the format makes free, so the file is much smaller
 than the original.

@@ -16,11 +16,13 @@
 #include "flacmode.h"
 #include "opencl.h"
 #include "packer.h"
+#include "rfsync.h"
 #include "sampleformat.h"
 
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
+#include <QProcess>
 #include <QTemporaryDir>
 
 #include <cmath>
@@ -400,6 +402,145 @@ void testStoredVariants()
     }
 }
 
+// What a track keeps when the capture is coded again against its archive (as rf-requantize does): what was said of the disc, the number of the
+// capture included, and its TBC curve, which belongs to the track.
+void testLikeKeepsTheTrack()
+{
+    QTemporaryDir dir;
+    const size_t samples = 3000000;
+    const QByteArray a = duplicatorCapture(samples, 0, 1);
+    const QByteArray b = duplicatorCapture(samples, 5, 2);
+    writeFile(dir.filePath("a.ddd.s16"), a);
+    writeFile(dir.filePath("b.ddd.s16"), b);
+    writeFile(dir.filePath("a.ddd.yaml"), "{\n  \"sample_rate_hz\": 40000000\n}\n");
+    QDir().mkpath(dir.filePath("p0"));
+    writeFile(dir.filePath("p0/pass0_0.txt"), pass0Dump(75, 20, 1000, 500));
+    writeFile(dir.filePath("p0/pass0_1.txt"), pass0Dump(75, 20, 1000, 495));
+    rfx::PackOptions options = testOptions();
+    options.pass0Dir = dir.filePath("p0");
+    options.keepPass0 = true;
+    options.info.standard = std::string("pal");
+    options.info.reference = std::string("LD-1234");
+    options.info.copy = 2u;
+    options.info.capture = 3u;
+    options.info.face = std::string("BA");
+    options.info.signal = std::string("yc");
+    const QString archive = dir.filePath("two.rfx");
+    rfx::packCaptures({dir.filePath("a.ddd.s16"), dir.filePath("b.ddd.s16")}, archive, options);
+    const rfx::Archive original(archive);
+    CHECK(original.pass0().size() == 2);
+
+    // The second track alone, coded again: it is track 0 of the new file, and keeps its disc and its curve.
+    const QString again = dir.filePath("again.rfx");
+    rfx::packCapturesLike({dir.filePath("b.ddd.s16")}, archive, {1}, again, testOptions(), std::nullopt);
+    const rfx::Archive opened(again);
+    CHECK(opened.meta().sources.size() == 1);
+    const rfx::SourceMeta &sm = opened.meta().sources[0];
+    CHECK(sm.standard == "pal");
+    CHECK(sm.reference == "LD-1234");
+    CHECK(sm.copy == 2);
+    CHECK(sm.capture == 3);
+    CHECK(sm.face == "BA");
+    CHECK(sm.signal == "yc");
+    CHECK(opened.pass0().size() == 1);
+    if (!opened.pass0().empty() && original.pass0().count(1) != 0) {
+        const rfx::SavedPass0 &kept = opened.pass0().begin()->second;
+        const rfx::SavedPass0 &was = original.pass0().at(1);
+        CHECK(opened.pass0().begin()->first == 0);
+        CHECK(was.pal);   // (the standard said for the captures is what locates their lines as PAL)
+        CHECK(kept.pal == was.pal);
+        CHECK(kept.fields.size() == was.fields.size());
+        CHECK(!kept.fields.empty() && !was.fields.empty() && kept.fields.front().lines == was.fields.front().lines);
+    }
+}
+
+// The standard of a track tells which video system its lines are located for first.
+void testSystemOfStandard()
+{
+    using rfx::VideoSystem;
+    CHECK(rfx::systemOfStandard("pal") == VideoSystem::Pal);
+    CHECK(rfx::systemOfStandard("secam") == VideoSystem::Pal);
+    for (const char *s : {"ntsc", "pal-m", "ntsc-vhd"}) {
+        CHECK(rfx::systemOfStandard(s) == VideoSystem::Ntsc);
+    }
+    CHECK(!rfx::systemOfStandard("").has_value());
+    CHECK(!rfx::systemOfStandard("unknown").has_value());
+    // Said: that one first and the other after. Not said: NTSC, then PAL.
+    CHECK(rfx::systemsToTry("pal")[0] == VideoSystem::Pal && rfx::systemsToTry("pal")[1] == VideoSystem::Ntsc);
+    CHECK(rfx::systemsToTry("pal-m")[0] == VideoSystem::Ntsc && rfx::systemsToTry("pal-m")[1] == VideoSystem::Pal);
+    CHECK(rfx::systemsToTry("")[0] == VideoSystem::Ntsc && rfx::systemsToTry("")[1] == VideoSystem::Pal);
+}
+
+// The program itself: `check` says which tracks are intact, and `merge` takes the tracks named after a file.
+void testCommandLine()
+{
+    QTemporaryDir dir;
+    const size_t samples = 1500000;
+    writeFile(dir.filePath("a.ddd.s16"), duplicatorCapture(samples, 0, 1));
+    writeFile(dir.filePath("b.ddd.s16"), duplicatorCapture(samples, 5, 2));
+    writeFile(dir.filePath("c.ddd.s16"), duplicatorCapture(samples, 9, 3));
+    const QString ab = dir.filePath("ab.rfx");
+    const QString c = dir.filePath("c.rfx");
+    rfx::packCaptures({dir.filePath("a.ddd.s16"), dir.filePath("b.ddd.s16")}, ab, testOptions());
+    rfx::packCaptures({dir.filePath("c.ddd.s16")}, c, testOptions());
+
+    const auto run = [](const QStringList &args, QString *out = nullptr) {
+        QProcess p;
+        p.start(QStringLiteral(RFX_PROGRAM), args);
+        if (!p.waitForFinished(120000)) {
+            p.kill();
+            return -1;
+        }
+        if (out) {
+            *out = QString::fromUtf8(p.readAllStandardOutput());
+        }
+        return p.exitStatus() == QProcess::NormalExit ? p.exitCode() : -1;
+    };
+
+    // check: every track intact, several files at once, then one byte changed in the samples of the file
+    QString said;
+    CHECK(run({QStringLiteral("check"), ab, c}, &said) == 0);
+    CHECK(said.count(QStringLiteral(": intact")) == 3);
+    CHECK(run({QStringLiteral("check"), ab, QStringLiteral("--track"), QStringLiteral("1")}, &said) == 0);
+    CHECK(said.count(QStringLiteral(": intact")) == 1);
+    CHECK(run({QStringLiteral("check"), QStringLiteral("--track"), QStringLiteral("x"), ab}) == 2);
+    CHECK(run({QStringLiteral("check")}) == 2);
+    {
+        const QString broken = dir.filePath("broken.rfx");
+        QByteArray bytes = readAll(ab);
+        bytes[bytes.size() / 2] = static_cast<char>(bytes[bytes.size() / 2] ^ 0x55);
+        writeFile(broken, bytes);
+        CHECK(run({QStringLiteral("check"), broken, c}, &said) == 1);
+        CHECK(said.contains(QStringLiteral("NOT intact")));
+        CHECK(said.contains(QStringLiteral(": intact")));   // (the other file is still said intact)
+    }
+
+    // merge with tracks named: the second of the first file and the only one of the second, no track coded again
+    const QString merged = dir.filePath("merged.rfx");
+    CHECK(run({QStringLiteral("merge"), QStringLiteral("-o"), merged, ab + QStringLiteral(":1"), c}) == 0);
+    {
+        const rfx::Archive opened(merged);
+        CHECK(opened.meta().sources.size() == 2);
+        CHECK(opened.meta().sources[0].name == "b.ddd.s16");
+        CHECK(opened.meta().sources[1].name == "c.ddd.s16");
+        rfx::unpackArchive(merged, dir.filePath("out"), rfx::UnpackOptions());
+        CHECK(readAll(dir.filePath("out/b.ddd.s16")) == readAll(dir.filePath("b.ddd.s16")));
+        CHECK(readAll(dir.filePath("out/c.ddd.s16")) == readAll(dir.filePath("c.ddd.s16")));
+    }
+    // a track that is not there is an error, and nothing is written
+    const QString none = dir.filePath("none.rfx");
+    CHECK(run({QStringLiteral("merge"), QStringLiteral("-o"), none, ab + QStringLiteral(":5"), c}) == 1);
+    CHECK(!QFileInfo::exists(none));
+    // add takes the tracks named of an .rfx file too
+    const QString added = dir.filePath("added.rfx");
+    CHECK(run({QStringLiteral("add"), QStringLiteral("-o"), added, c, ab + QStringLiteral(":0")}) == 0);
+    {
+        const rfx::Archive opened(added);
+        CHECK(opened.meta().sources.size() == 2);
+        CHECK(opened.meta().sources[1].name == "a.ddd.s16");
+    }
+}
+
 int main()
 
 {
@@ -407,6 +548,9 @@ int main()
     testTwoCapturesWithReference();
     testEditedTracks();
     testStoredVariants();
+    testLikeKeepsTheTrack();
+    testSystemOfStandard();
+    testCommandLine();
     if (failures != 0) {
         std::fprintf(stderr, "%d check(s) failed\n", failures);
         return 1;

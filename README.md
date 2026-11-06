@@ -34,7 +34,7 @@ these files directly. The sister project for what comes after the decoder is
 
 ```bash
 rfx pack -o disc.rfx a.ddd.s16 b.ddd.s16 c.ddd.s16    # the cleanest capture is coded first
-rfx info disc.rfx                                      # what the file holds `--yaml: all the metadata)
+rfx info disc.rfx                                      # what the file holds (--yaml: all the metadata)
 rfx unpack disc.rfx -d out                             # the captures back, checked by SHA-256
 rfx unpack disc.rfx --only 2 -d out                    # one track
 rfx extract disc.rfx -o two.rfx --only 0,2             # editing: extract, remove, merge, add
@@ -44,6 +44,8 @@ rfx pack --standard ntsc --reference LD-1234 --face A --signal yc -o disc.rfx a.
 rfx tag disc.rfx -o said.rfx --track 1 --copy 2 --capture-number 3 --face BA   # said or changed in some tracks of a file: the samples are copied as they are
 rfx pack --keep-tbc-curve -o disc.rfx a.ddd.s16 b.ddd.s16  # keep the TBC curve in the file (the speed of the disc, the time base correction)
 rfx tbc-curve disc.rfx                                 # the same for a file that is made: worked out from the RF, added at its end
+rfx merge -o all.rfx a.rfx:0,2 b.rfx                   # some tracks of a file only (file.rfx:0,2; none listed: all), copied as they are
+rfx check disc.rfx other.rfx                           # the integrity of the files: every track against its SHA-256 (nothing is written)
 ```
 
 The **TBC curve** (where the lines of each capture are, worked out from its RF: the pass 0 of ld-decode) can be **kept in the file** (`pack --keep-tbc-curve`, `rfx tbc-curve`, and *Compute TBC curve* in rf-packer and rf-analyse; the editing commands take it along with the tracks they copy and take `--keep-tbc-curve` too): rf-analyse then shows the speed of the disc and corrects the time base with no minutes of work, and a decoder that reads them `ld-decode) need not locate the lines again. Nothing else in the file is rewritten `specification 3.1).

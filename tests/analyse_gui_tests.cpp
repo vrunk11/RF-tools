@@ -39,6 +39,7 @@
 #include <QComboBox>
 #include <QDoubleSpinBox>
 #include <QDir>
+#include <QMessageBox>
 #include <QElapsedTimer>
 #include <QFile>
 #include <QSettings>
@@ -323,6 +324,20 @@ void AnalyseGuiTests::sessionResults()
     s.setFftSize(1024);
     QVERIFY(settle(s));
     QCOMPARE(int(s.result().spectra[0].fftSize), 1024);
+}
+
+// The next box that asks something (a modal message box) is answered with `button`; what the box said is kept in `text`.
+static void answerNextBox(QMessageBox::StandardButton button, QString *text)
+{
+    QTimer::singleShot(50, qApp, [button, text] {
+        auto *box = qobject_cast<QMessageBox *>(QApplication::activeModalWidget());
+        if (!box || !box->button(button)) {
+            answerNextBox(button, text);
+            return;
+        }
+        *text = box->text();
+        box->button(button)->click();
+    });
 }
 
 void AnalyseGuiTests::windowFollowsTheMouse()
@@ -1308,6 +1323,52 @@ void AnalyseGuiTests::speedFromTheRf()
         QCOMPARE(worked.saveSpeedCurves(&keepError), 1);
         QCOMPARE(worked.unsavedCurves(), 0);
         worked.close();
+        // Closing the window with a curve that is worked out and not in its file asks first: Cancel keeps the window, Don't save closes it
+        // without the curve, Save puts the curve in the file.
+        const QString quit = m_dir.filePath("fast-quit.rfx");
+        rfx::packCaptures({path}, quit, pack);
+        const auto workedOut = [&](MainWindow &window) {
+            QVERIFY(window.openFile(quit));
+            auto *inside = window.findChild<Session *>();
+            QVERIFY(inside);
+            inside->computeCurve(0);
+            QElapsedTimer waiting;
+            waiting.start();
+            while (!inside->curveReady(0) && waiting.elapsed() < 60000) {
+                QTest::qWait(20);
+            }
+            QVERIFY(inside->curveReady(0));
+            QTRY_COMPARE(inside->unsavedCurves(), 1);
+        };
+        QString asked;
+        {
+            MainWindow window;
+            workedOut(window);
+            if (QTest::currentTestFailed()) {
+                return;
+            }
+            answerNextBox(QMessageBox::Cancel, &asked);
+            QVERIFY(!window.close());
+            QVERIFY(asked.contains(QStringLiteral("TBC curve")));
+            QCOMPARE(window.findChild<Session *>()->unsavedCurves(), 1);
+            asked.clear();
+            answerNextBox(QMessageBox::Discard, &asked);
+            QVERIFY(window.close());
+            QVERIFY(!asked.isEmpty());
+            QVERIFY(rfx::Archive(quit).pass0().empty());
+        }
+        {
+            MainWindow window;
+            workedOut(window);
+            if (QTest::currentTestFailed()) {
+                return;
+            }
+            asked.clear();
+            answerNextBox(QMessageBox::Save, &asked);
+            QVERIFY(window.close());
+            QVERIFY(!asked.isEmpty());
+            QCOMPARE(rfx::Archive(quit).pass0().size(), size_t(1));
+        }
     }
     session->close();
 }

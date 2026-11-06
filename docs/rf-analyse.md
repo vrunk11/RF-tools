@@ -53,7 +53,7 @@ move. A file of many gigabytes opens at once.
   made over.
 - **The TBC curve.** Two graphs need to know where the lines of a capture are: the speed of the disc, and the time base correction (TBC).
   Both are made from the same thing, the **TBC curve** of the capture. It is worked out from the RF of the capture, by locating each line and
-  the frame code of each field (the pass 0 of ld-decode, ported: the same positions to the bit); NTSC is tried first, then PAL. It takes
+  the frame code of each field (the pass 0 of ld-decode, ported: the same positions to the bit); the system the **standard** of the track says is tried first (PAL and SECAM: PAL; NTSC, PAL-M and NTSC-VHD: NTSC) and the other after it when no line is found, NTSC then PAL when the standard is not said (`rfx pack --standard pal` also locates the lines as PAL). It takes
   minutes on a large capture (a track coded against others needs them decoded first), so it is **never done unasked**, and only for the
   tracks that are asked for: by the **Compute TBC curve** button of the panel of the source (beside *Check this track*: it works the
   selected track out and shows nothing else), by the box *From RF* of the speed graph, or by the box *Align capture*. Once a track has its
@@ -63,7 +63,8 @@ move. A file of many gigabytes opens at once.
   of tracks and how far they are. The curve is kept until the files change. It can be kept in the file: **File > Save TBC curve** (for an
   `.rfx` file of the predictor variant) adds it to the end of the file (a few megabytes at most, nothing else is rewritten; specification
   3.1) and it is there at once when the file is opened again. Quitting, or closing the file, when a curve is worked out and not in its file, asks whether to keep it first (Save, Don't save, Cancel). rf-packer and `rfx` do the same (**File > Compute TBC curve**, the box of
-  the options when it writes a file, `rfx tbc-curve`).- **Check** (the integrity of the files): **File > Check the file**, the **Check** button beside *Info* under the list of tracks, and the **Check this
+  the options when it writes a file, `rfx tbc-curve`).
+- **Check** (the integrity of the files): **File > Check the file**, the **Check** button beside *Info* under the list of tracks, and the **Check this
   track** button in the panel of the source decode the tracks of the `.rfx` files that are open (every track, or the selected one) and compare
   what comes out with the SHA-256 of the samples the file keeps (and each stored sidecar with its own). It works for the three variants of the
   file. A progress bar shows how far it is and can stop it; the result says that all the tracks are intact, or which are not and why. The tracks

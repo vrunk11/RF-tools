@@ -164,7 +164,7 @@ fast the same way, the tables show nothing. The lines of pass 0 are measured on 
 so the speed and the time base correction made from them are absolute. A tool that wants to correct the time base of a capture needs them,
 never the lag table.
 
-The block is written by `rfx pack --keep-pass0`, by `rfx keep-pass0` on a file that is made (appended, nothing else rewritten) and by rf-packer; a tool that writes another archive from some of its tracks carries the lines of the tracks it copies along with them. A reader that does not know the block ignores it (the metadata is the block of timestamp 0).
+The block is written by `rfx pack --keep-tbc-curve`, by `rfx tbc-curve` on a file that is made (appended, nothing else rewritten) and by rf-packer; a tool that writes another archive from some of its tracks carries the lines of the tracks it copies along with them. A reader that does not know the block ignores it (the metadata is the block of timestamp 0).
 ## 4. The map
 
 The map track holds the **lag tables**. Each map cluster (timestamp `0, 1, 2, ...`,
