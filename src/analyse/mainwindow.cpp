@@ -21,8 +21,10 @@
 #include "collapse.h"
 #include "metadatapanel.h"
 #include "session.h"
+#include "verify.h"
 #include "spectrumview.h"
 #include "statspanel.h"
+#include "trackeditdialog.h"
 #include "tracklist.h"
 #include "waveformview.h"
 
@@ -239,8 +241,13 @@ MainWindow::MainWindow() : m_session(new Session(this))
     m_infoButton->setCheckable(true);
     m_infoButton->setChecked(true);
     m_infoButton->setToolTip(tr("Show or hide the panel with what is known of the selected track (key I)"));
+    m_verifyAll = new QPushButton(tr("Check"), left);
+    m_verifyAll->setObjectName(QStringLiteral("verifyAll"));
+    m_verifyAll->setToolTip(tr("Check every track of the .rfx files that are open: decode it and compare it with the SHA-256 the file keeps of its samples"));
     buttons->addWidget(addButton, 1);
+    buttons->addWidget(m_verifyAll);
     buttons->addWidget(m_infoButton);
+    connect(m_verifyAll, &QPushButton::clicked, this, [this] { verifyTracks(std::nullopt); });
     leftLayout->addLayout(buttons);
     connect(addButton, &QPushButton::clicked, this, &MainWindow::addFiles);
     connect(m_infoButton, &QPushButton::toggled, this, [this](bool on) {
@@ -278,6 +285,27 @@ MainWindow::MainWindow() : m_session(new Session(this))
     m_metadata->setFrameShadow(QFrame::Sunken);
     panelLayout->addWidget(panelHead);
     panelLayout->addWidget(m_metadata, 1);
+    m_verifyTrack = new QPushButton(tr("Check this track"), m_panel);
+    m_verifyTrack->setObjectName(QStringLiteral("verifyTrack"));
+    m_verifyTrack->setToolTip(tr("Decode the selected track and compare it with the SHA-256 the file keeps of its samples"));
+    m_computeTrack = new QPushButton(tr("Compute TBC curve"), m_panel);
+    m_computeTrack->setObjectName(QStringLiteral("computeTrack"));
+    m_computeTrack->setToolTip(tr("Work out the TBC curve of the selected track from its RF: where its lines are, from which the speed of the disc and the time base correction are made. The list of tracks shows how far it is. File > Save TBC curve keeps it in the .rfx file"));
+    auto *trackButtons = new QHBoxLayout;
+    trackButtons->addWidget(m_verifyTrack);
+    trackButtons->addWidget(m_computeTrack);
+    m_editTrack = new QPushButton(tr("Edit…"), m_panel);
+    m_editTrack->setObjectName(QStringLiteral("editTrack"));
+    m_editTrack->setToolTip(tr("Say or change the name, the note, and what is known of the disc and the signal (standard, reference, copy, face, CVBS or Y/C) for the selected track: the .rfx file is written again with it, its samples copied as they are"));
+    trackButtons->addWidget(m_editTrack);
+    connect(m_editTrack, &QPushButton::clicked, this, [this] { editTrack(); });
+    trackButtons->addStretch();
+    panelLayout->addLayout(trackButtons);
+    connect(m_verifyTrack, &QPushButton::clicked, this, [this] { verifyTracks(m_session->selected()); });
+    connect(m_computeTrack, &QPushButton::clicked, this, [this] {
+        m_session->computeCurve(m_session->selected());
+        updateVerify();
+    });
     m_panel->setMinimumWidth(kMetadataWidth);
     connect(panelClose, &QToolButton::clicked, this, [this] { showMetadata(false, true); });
 
@@ -311,7 +339,7 @@ MainWindow::MainWindow() : m_session(new Session(this))
     m_residueBox->setObjectName(QStringLiteral("residueBox"));
     m_residueBox->setToolTip(tr("Show the noise the stack removes in place of the tracks: what each track has more than the stack (a curve for each, or one for all of them: View > Show combined residue). Combined view only."));
     tabLayout->addWidget(m_residueBox);
-    // Both need the time base corrected: ticking one ticks the box Align capture (and asks for the lines of pass 0 it needs), unticking that unticks both.
+    // Both need the time base corrected: ticking one ticks the box Align capture (and asks for the TBC curve it needs), unticking that unticks both.
     const auto askedWithAlign = [this](QCheckBox *box, void (Session::*set)(bool)) {
         connect(box, &QCheckBox::toggled, this, [this, box, set](bool on) {
             if (on && !m_alignBox->isChecked()) {
@@ -502,11 +530,15 @@ MainWindow::MainWindow() : m_session(new Session(this))
     const auto showSpeedProgress = [this] {
         const int working = m_session->rfWorkingTracks();
         m_statusSpeed->setVisible(working > 0);
-        m_statusSpeed->setText(working > 0 ? tr("Working out the speed from the RF: %n track(s), %1%", nullptr, working).arg(m_session->rfMeanPercent()) : QString());
+        m_statusSpeed->setText(working > 0 ? tr("Working out the TBC curve: %n track(s), %1%", nullptr, working).arg(m_session->rfMeanPercent()) : QString());
     };
     connect(m_session, &Session::rfSpeedChanged, this, showSpeedProgress);
     connect(m_session, &Session::rfSpeedProgress, this, showSpeedProgress);
     m_statusSpeed->hide();
+    for (auto signal : {&Session::opened, &Session::closed, &Session::changed, &Session::rfSpeedChanged}) {
+        connect(m_session, signal, this, [this] { updateVerify(); });
+    }
+    updateVerify();
 
     connect(m_tracks, &TrackList::rowClicked, this, [this](int row, bool wasSelected) {
         if (wasSelected) {
@@ -609,14 +641,14 @@ MainWindow::~MainWindow()
     m_session->close();
 }
 
-// The box "Align capture" of a waveform: the time base of its tracks corrected (from the lines of pass 0, the ones the graph of the speed is
+// The box "Align capture" of a waveform: the time base of its tracks corrected (from the TBC curve, the one the graph of the speed is
 // made from), the tracks shown when `tracks` is empty. It stays on for the tracks that are shown afterwards (a track ticked in the list is
 // aligned too). Without the lines of a track, it asks whether to work them out, for the tracks wanted only.
 QCheckBox *MainWindow::alignBox(QWidget *parent)
 {
     auto *box = new QCheckBox(tr("Align capture"), parent);
     box->setObjectName(QStringLiteral("alignBox"));
-    box->setToolTip(tr("Correct the time base of the capture, as before stacking: every line at its place at the nominal speed, the same place in every capture. The waveform, the spectrum and the statistics are those of the resampled signal. It needs the lines of pass 0 (the curve of the graph of the speed); without them it proposes to work them out for the tracks shown."));
+    box->setToolTip(tr("Correct the time base of the capture, as before stacking: every line at its place at the nominal speed, the same place in every capture. The waveform, the spectrum and the statistics are those of the resampled signal. It needs the TBC curve of the tracks (the one of the graph of the speed); without it, it proposes to work it out for the tracks shown."));
     const auto wanted = [this] {
         QVector<int> out;
         for (int k = 0; k < m_session->trackCount(); ++k) {
@@ -652,7 +684,7 @@ QCheckBox *MainWindow::alignBox(QWidget *parent)
         }
         if (!missing.isEmpty()) {
             *asking = true;
-            QString text = tr("The lines of pass 0 of the track(s) %1 are not worked out yet. Work them out from the RF now? It takes a while (minutes for a large capture); the waveform is aligned when it is done.").arg(missing.join(QStringLiteral(", ")));
+            QString text = tr("The TBC curve of the track(s) %1 is not worked out yet. Work it out from the RF now? It takes a while (minutes for a large capture); the waveform is aligned when it is done.").arg(missing.join(QStringLiteral(", ")));
             if (!todo.contains(0) && !m_session->curveReady(0) && !m_session->rfSpeed(0)) {
                 text += QLatin1Char('\n') + tr("The first track is worked out too: it gives the axis the others are lined up on.");
             }
@@ -1213,9 +1245,13 @@ void MainWindow::buildMenus()
     m_recentMenu = file->addMenu(tr("Open &recent"));
     file->addSeparator();
     m_exportAction = file->addAction(tr("&Export metadata as YAML…"), this, &MainWindow::exportYaml);
-    m_saveSpeedAction = file->addAction(tr("Save speed &curve"), this, &MainWindow::saveSpeed);
-    m_saveSpeedAction->setToolTip(tr("Keep the speed curves that are worked out in the .rfx file (a few kilobytes added at its end; they are shown at once next time)."));
-    connect(file, &QMenu::aboutToShow, this, [this] { m_saveSpeedAction->setEnabled(m_session->isOpen() && m_session->canSaveSpeed()); });
+    m_verifyAction = file->addAction(tr("Chec&k the file"), this, [this] { verifyTracks(std::nullopt); });
+    m_verifyAction->setObjectName(QStringLiteral("verifyFile"));
+    m_verifyAction->setToolTip(tr("Decode every track of the .rfx files that are open and compare it with the SHA-256 the file keeps of its samples (a track alone: its Check button in the panel of the source)"));
+    m_saveSpeedAction = file->addAction(tr("Save TBC &curve"), this, &MainWindow::saveSpeed);
+    m_saveSpeedAction->setToolTip(tr("Keep the TBC curves that are worked out in the .rfx file (added at its end, nothing else in it changes; they are shown at once next time)."));
+    connect(file, &QMenu::aboutToShow, this, [this] { m_saveSpeedAction->setEnabled(m_session->isOpen() && m_session->canSaveSpeed());
+        updateVerify(); });
     m_closeAction = file->addAction(tr("&Close file"), this, &MainWindow::closeFile);
     m_closeAction->setShortcut(QKeySequence::Close);
     file->addSeparator();
@@ -1552,6 +1588,7 @@ bool MainWindow::openFiles(const QStringList &paths)
     if (paths.isEmpty()) {
         return false;
     }
+    rememberFolder(QFileInfo(paths.first()).absolutePath());
     for (const QString &path : paths) {
         if (!QFileInfo(path).isFile()) {
             QMessageBox::warning(this, tr("Cannot open the file"), tr("%1\n\nThere is no such file.").arg(path));
@@ -1597,7 +1634,23 @@ bool MainWindow::openSources(std::vector<Session::Source> sources, bool append)
 
 void MainWindow::addFiles()
 {
-    addPaths(QFileDialog::getOpenFileNames(this, tr("Open more RF files"), QString(), captureFilters().join(QLatin1String(";;"))));
+    const QStringList paths = QFileDialog::getOpenFileNames(this, tr("Open more RF files"), lastFolder(), captureFilters().join(QLatin1String(";;")));
+    rememberFolder(paths.isEmpty() ? QString() : QFileInfo(paths.first()).absolutePath());
+    addPaths(paths);
+}
+
+// The folder the person last opened files from, where the next dialog starts (kept between runs).
+QString MainWindow::lastFolder() const
+{
+    const QString folder = QSettings().value(QStringLiteral("lastDir")).toString();
+    return QFileInfo(folder).isDir() ? folder : QString();
+}
+
+void MainWindow::rememberFolder(const QString &folder)
+{
+    if (!folder.isEmpty()) {
+        QSettings().setValue(QStringLiteral("lastDir"), folder);
+    }
 }
 
 // Files to open: added to the ones that are open (a drop and the button both do this), else opened.
@@ -1606,6 +1659,7 @@ void MainWindow::addPaths(const QStringList &given)
     if (given.isEmpty()) {
         return;
     }
+    rememberFolder(QFileInfo(given.first()).absolutePath());
     if (!m_session->isOpen()) {
         openFiles(given);
         return;
@@ -1686,6 +1740,7 @@ void MainWindow::openOrAdd(const QStringList &given)
     if (given.isEmpty()) {
         return;
     }
+    rememberFolder(QFileInfo(given.first()).absolutePath());
     if (!m_session->isOpen()) {
         openFiles(given);
         return;
@@ -1735,10 +1790,11 @@ void MainWindow::openOrAdd(const QStringList &given)
 // File > Open folder: the RF files in it (not in the folders under it), as if they had been chosen one by one.
 void MainWindow::chooseFolder()
 {
-    const QString folder = QFileDialog::getExistingDirectory(this, tr("Open a folder of RF files"));
+    const QString folder = QFileDialog::getExistingDirectory(this, tr("Open a folder of RF files"), lastFolder());
     if (folder.isEmpty()) {
         return;
     }
+    rememberFolder(folder);
     openFolder(folder);
 }
 
@@ -1755,15 +1811,276 @@ bool MainWindow::openFolder(const QString &folder)
 
 void MainWindow::chooseFile()
 {
-    const QStringList paths = QFileDialog::getOpenFileNames(this, tr("Open RF files"), QString(), captureFilters().join(QLatin1String(";;")));
+    const QStringList paths = QFileDialog::getOpenFileNames(this, tr("Open RF files"), lastFolder(), captureFilters().join(QLatin1String(";;")));
     if (!paths.isEmpty()) {
+        rememberFolder(QFileInfo(paths.first()).absolutePath());
         openOrAdd(paths);
+    }
+}
+
+void MainWindow::editTrack()
+{
+    const int k = m_session->selected();
+    if (!m_session->isOpen() || k >= m_session->trackCount()) {
+        return;
+    }
+    if (!m_session->inArchive(k)) {
+        QMessageBox::information(this, tr("Edit"), tr("A capture on its own keeps no metadata: nothing can be said of it. Pack it in an .rfx file (rf-packer) first."));
+        return;
+    }
+    TrackEditDialog dialog(m_session->track(k), this);
+    if (dialog.exec() != QDialog::Accepted || !dialog.changed()) {
+        return;
+    }
+    rewriteTrack(k, dialog.edit());
+}
+
+bool MainWindow::rewriteTrack(int k, const rfx::TrackEdit &edit, bool quiet)
+{
+    if (!m_session->isOpen() || k < 0 || k >= m_session->trackCount() || !m_session->inArchive(k)) {
+        return false;
+    }
+    const auto say = [this, quiet](const QString &text) {
+        if (!quiet) {
+            QMessageBox::warning(this, tr("Edit"), text);
+        }
+    };
+    // What is worked out and not in the file would be lost when it is read again: asked first.
+    if (!confirmCurves()) {
+        return false;
+    }
+    const QString path = m_session->sourcePath(k);
+    const size_t local = m_session->localTrack(k);
+    const std::vector<Session::Source> sources = m_openSources;
+    // The files are let go (this one is replaced), and opened again after.
+    m_session->close();
+    const QFileInfo info(path);
+    const QString aside = info.dir().filePath(info.completeBaseName() + QStringLiteral(".edit.rfx"));
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    auto error = std::make_shared<QString>();
+    std::thread worker([path, aside, local, edit, done, error] {
+        try {
+            std::vector<rfx::Pick> picks = rfx::pickAll({path});
+            if (local >= picks.size()) {
+                throw rfx::Error("the track is not in the file");
+            }
+            picks[local].edit = edit;
+            rfx::PackOptions options;
+            options.order = rfx::OrderMode::Given;
+            rfx::assembleArchives({path}, picks, aside, options, std::nullopt);
+        } catch (const std::exception &e) {
+            *error = QString::fromUtf8(e.what());
+        }
+        *done = true;
+    });
+    {
+        QProgressDialog busy(tr("Writing the file again..."), QString(), 0, 0, this);
+        busy.setWindowTitle(tr("Edit"));
+        busy.setWindowModality(Qt::WindowModal);
+        busy.setCancelButton(nullptr);
+        busy.setMinimumDuration(0);
+        while (!*done) {
+            QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+            QThread::msleep(20);
+        }
+        worker.join();
+    }
+    QString failure = *error;
+    if (failure.isEmpty() && QFile::exists(path) && !QFile::remove(path)) {
+        failure = tr("%1 cannot be replaced: is it open in another program?").arg(QDir::toNativeSeparators(path));
+    }
+    if (failure.isEmpty() && !QFile::rename(aside, path)) {
+        failure = tr("%1 cannot be put in place of the file").arg(QDir::toNativeSeparators(aside));
+    }
+    if (!failure.isEmpty()) {
+        QFile::remove(aside);
+    }
+    // (the files are opened again, as they were, with the track that was selected)
+    QString reopen;
+    if (!m_session->open(sources, &reopen)) {
+        say(failure.isEmpty() ? reopen : failure + QLatin1Char('\n') + reopen);
+        return false;
+    }
+    m_session->setSelected(k);
+    if (!failure.isEmpty()) {
+        say(failure);
+        return false;
+    }
+    statusBar()->showMessage(tr("%1 written again with what was changed").arg(info.fileName()), 8000);
+    return true;
+}
+
+bool MainWindow::confirmCurves()
+{
+    const int unsaved = m_session->unsavedCurves();
+    if (unsaved == 0) {
+        return true;
+    }
+    QMessageBox box(QMessageBox::Question, tr("TBC curve"),
+                    tr("The TBC curve of %n track(s) is worked out and is not kept in its .rfx file: it is lost when the file is closed. Keep it in the file first?", nullptr, unsaved),
+                    QMessageBox::Save | QMessageBox::Discard | QMessageBox::Cancel, this);
+    box.setDefaultButton(QMessageBox::Save);
+    box.button(QMessageBox::Save)->setText(tr("Save"));
+    box.button(QMessageBox::Discard)->setText(tr("Don't save"));
+    switch (box.exec()) {
+    case QMessageBox::Save: {
+        QString error;
+        if (m_session->saveSpeedCurves(&error) < 0) {
+            QMessageBox::warning(this, tr("Cannot save the TBC curve"), error);
+            return false;
+        }
+        return true;
+    }
+    case QMessageBox::Discard:
+        return true;
+    default:
+        return false;
+    }
+}
+
+void MainWindow::closeEvent(QCloseEvent *event)
+{
+    if (confirmCurves()) {
+        event->accept();
+    } else {
+        event->ignore();
     }
 }
 
 void MainWindow::closeFile()
 {
-    m_session->close();
+    if (confirmCurves()) {
+        m_session->close();
+    }
+}
+
+void MainWindow::updateVerify()
+{
+    bool archive = false;
+    for (int k = 0; k < m_session->trackCount() && !archive; ++k) {
+        archive = m_session->inArchive(k);
+    }
+    m_verifyAll->setEnabled(archive);
+    m_verifyAction->setEnabled(archive);
+    m_verifyTrack->setEnabled(m_session->isOpen() && m_session->selected() < m_session->trackCount() && m_session->inArchive(m_session->selected()));
+    // (any track has lines to locate, a capture on its own too; not when it has its curve, or is being worked on)
+    const int track = m_session->selected();
+    m_editTrack->setEnabled(m_session->isOpen() && m_session->selected() < m_session->trackCount() && m_session->inArchive(m_session->selected()));
+    m_computeTrack->setEnabled(m_session->isOpen() && track < m_session->trackCount() && !m_session->curveReady(track) && m_session->rfProgressOf(track) == -1);
+}
+
+bool MainWindow::verifyTracks(std::optional<int> track, bool quiet)
+{
+    if (!m_session->isOpen()) {
+        return false;
+    }
+    // What is checked: the files that are archives, each whole, or the track alone.
+    struct Part
+    {
+        QString path;
+        std::optional<size_t> only;
+    };
+    std::vector<Part> parts;
+    for (int k = 0; k < m_session->trackCount(); ++k) {
+        if ((track && k != *track) || !m_session->inArchive(k)) {
+            continue;
+        }
+        const QString path = m_session->sourcePath(k);
+        if (track) {
+            parts.push_back({path, m_session->localTrack(k)});
+        } else if (std::none_of(parts.begin(), parts.end(), [&](const Part &p) { return p.path == path; })) {
+            parts.push_back({path, std::nullopt});
+        }
+    }
+    if (parts.empty()) {
+        if (!quiet) {
+            QMessageBox::information(this, tr("Check"), tr("There is nothing to check: a capture on its own keeps no checksum. Open an .rfx file."));
+        }
+        return false;
+    }
+    // The work is done on a thread of its own, with its own reading of the files; the window stays alive, and can stop it.
+    struct Outcome
+    {
+        QString path;
+        std::vector<rfx::TrackCheck> checks;
+    };
+    auto outcomes = std::make_shared<std::vector<Outcome>>();
+    auto failure = std::make_shared<QString>();
+    auto progress = std::make_shared<std::atomic<double>>(0.0);
+    auto stop = std::make_shared<std::atomic<bool>>(false);
+    auto done = std::make_shared<std::atomic<bool>>(false);
+    std::thread worker([parts, outcomes, failure, progress, stop, done] {
+        try {
+            for (size_t i = 0; i < parts.size(); ++i) {
+                Outcome o;
+                o.path = parts[i].path;
+                o.checks = rfx::verifyArchive(
+                    parts[i].path, parts[i].only,
+                    [&](double f) { *progress = (static_cast<double>(i) + f) / static_cast<double>(parts.size()); }, stop.get());
+                outcomes->push_back(std::move(o));
+            }
+        } catch (const std::exception &e) {
+            *failure = QString::fromUtf8(e.what());
+        }
+        *done = true;
+    });
+    QProgressDialog dialog(tr("Decoding and comparing with the checksums…"), tr("Stop"), 0, 1000, this);
+    dialog.setWindowTitle(track ? tr("Checking track %1").arg(*track) : tr("Checking the files"));
+    dialog.setWindowModality(Qt::WindowModal);
+    dialog.setMinimumDuration(0);
+    dialog.setValue(0);
+    while (!*done) {
+        QCoreApplication::processEvents(QEventLoop::AllEvents, 50);
+        dialog.setValue(static_cast<int>(*progress * 1000.0));
+        if (dialog.wasCanceled()) {
+            *stop = true;
+        }
+        QThread::msleep(20);
+    }
+    worker.join();
+    dialog.reset();
+    if (!failure->isEmpty()) {
+        if (!quiet) {
+            QMessageBox::critical(this, tr("Check"), *failure);
+        }
+        return false;
+    }
+    // What was found: the tracks that are not as packed, said by their name, and how many are.
+    QStringList damaged;
+    int intact = 0;
+    int unchecked = 0;
+    for (const Outcome &o : *outcomes) {
+        for (const rfx::TrackCheck &c : o.checks) {
+            if (!c.ok) {
+                damaged << tr("%1 (track %2 of %3): %4").arg(QString::fromStdString(c.name)).arg(c.track).arg(QFileInfo(o.path).fileName(), QString::fromStdString(c.detail));
+            } else if (c.checked) {
+                ++intact;
+            } else {
+                ++unchecked;
+            }
+        }
+    }
+    const bool stopped = stop->load();
+    QString text;
+    if (!damaged.isEmpty()) {
+        text = tr("Damaged: %n track(s) are not as they were packed:", nullptr, damaged.size()) + QLatin1Char('\n') + damaged.join(QLatin1Char('\n'));
+    } else if (stopped) {
+        text = tr("Stopped: the tracks checked before are intact (%n).", nullptr, intact);
+    } else {
+        text = tr("All intact: %n track(s) match the SHA-256 their file keeps of the samples.", nullptr, intact);
+        if (unchecked > 0) {
+            text += QLatin1Char('\n') + tr("%n track(s) have no checksum in their file, and nothing is said of them.", nullptr, unchecked);
+        }
+    }
+    statusBar()->showMessage(text.section(QLatin1Char('\n'), 0, 0), 10000);
+    if (!quiet) {
+        if (damaged.isEmpty()) {
+            QMessageBox::information(this, tr("Check"), text);
+        } else {
+            QMessageBox::warning(this, tr("Check"), text);
+        }
+    }
+    return damaged.isEmpty() && !stopped && intact > 0;
 }
 
 void MainWindow::saveSpeed()
@@ -1776,18 +2093,18 @@ void MainWindow::saveSpeed()
         ready += m_session->inArchive(k) && m_session->curveReady(k) ? 1 : 0;
     }
     if (ready == 0) {
-        QMessageBox::information(this, tr("Save speed curve"), tr("No speed curve is worked out yet. Tick From RF (the graph of the speed) or Align capture for the tracks wanted, wait for it, then save."));
+        QMessageBox::information(this, tr("Save TBC curve"), tr("No TBC curve is worked out yet. Use Compute TBC curve (or tick From RF, or Align capture) for the tracks wanted, wait for it, then save."));
         return;
     }
-    if (QMessageBox::question(this, tr("Save speed curve"), tr("Add the speed curves of %n track(s) to the .rfx file? It is written at the end of the file, nothing else in it changes.", nullptr, ready)) != QMessageBox::Yes) {
+    if (QMessageBox::question(this, tr("Save TBC curve"), tr("Add the TBC curve of %n track(s) to the .rfx file? It is written at the end of the file, nothing else in it changes.", nullptr, ready)) != QMessageBox::Yes) {
         return;
     }
     QString error;
     const int kept = m_session->saveSpeedCurves(&error);
     if (kept < 0) {
-        QMessageBox::warning(this, tr("Cannot save the speed curve"), error);
+        QMessageBox::warning(this, tr("Cannot save the TBC curve"), error);
     } else {
-        statusBar()->showMessage(tr("Speed curves kept for %n track(s).", nullptr, kept), 6000);
+        statusBar()->showMessage(tr("TBC curve kept for %n track(s).", nullptr, kept), 6000);
     }
 }
 

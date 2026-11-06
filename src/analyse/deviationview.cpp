@@ -193,7 +193,7 @@ void DeviationView::paintEvent(QPaintEvent *)
         p.setFont(big);
         p.setPen(pal.color(QPalette::Text));
         p.drawText(QRectF(plotLeft(), top, plotRight() - plotLeft(), plotH), Qt::AlignCenter,
-                   tr("Working out the speed from the RF…\ntrack %1\nit takes a while on a large capture").arg(pending.join(QStringLiteral(", "))));
+                   tr("Working out the TBC curve…\ntrack %1\nit takes a while on a large capture").arg(pending.join(QStringLiteral(", "))));
         p.setFont(font());
     }
 
@@ -349,7 +349,7 @@ DeviationBlock::DeviationBlock(Session *session, QWidget *parent) : QWidget(pare
     row->addStretch();
     m_rfBox = new QCheckBox(tr("From RF"), m_head);
     m_rfBox->setObjectName(QStringLiteral("rfSpeedBox"));
-    m_rfBox->setToolTip(tr("Measure the speed from the RF itself (the track of the lane, or every track shown in the combined view): its lines are located from its signal (the pass 0 of ld-decode), and the speed is the spacing of the lines against the nominal one. It works for the reference and for a capture on its own, with or without a stored curve."));
+    m_rfBox->setToolTip(tr("Show the speed of the disc, from the TBC curve of the track (the track of the lane, or every track shown in the combined view): it is worked out from the RF itself, as the spacing of the lines against the nominal one, if it is not there yet. It works for the reference and for a capture on its own."));
     connect(m_rfBox, &QCheckBox::toggled, this, [this](bool on) {
         m_rfMode = on;
         // A lane: its track. The combined view: every track shown, the selected one first.
@@ -465,9 +465,9 @@ void DeviationBlock::refresh()
     m_separator->setVisible(!(any && !m_collapsed));
     m_unavailable->setVisible(false);
     m_collapseButton->setEnabled(any);
-    const QString subtitle = m_session->rfSpeedBusy() ? tr("working out the speed from the RF…") : tr("in ppm from the RF: the line spacing against the nominal one, above faster, below slower");
+    const QString subtitle = m_session->rfSpeedBusy() ? tr("working out the TBC curve…") : tr("in ppm from the RF: the line spacing against the nominal one, above faster, below slower");
     m_subtitle->setText(any ? subtitle
-                            : tr("not computed: %1").arg(m_session->isOpen() ? tr("tick From RF to measure the speed of the track from the RF (it takes a while)") : tr("no file is open")));
+                            : tr("not computed: %1").arg(m_session->isOpen() ? tr("use Compute TBC curve, or tick From RF (it takes a while)") : tr("no file is open")));
     // Without a curve, or reduced, the block is one line, and does not take room from the others.
     const bool reduced = !any || m_collapsed;
     const int line = m_head->sizeHint().height() + 2;

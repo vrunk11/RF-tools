@@ -129,6 +129,8 @@ public:
     // first track among all; the bytes it takes (the whole file for a capture).
     bool inArchive(int k) const;
     QString sourcePath(int k) const;
+    // The number of track k in the file it is in (from 0).
+    size_t localTrack(int k) const;
     int firstTrackOfSource(int k) const;
     uint64_t storedBytes(int k) const;
     // The first reference of a track of an archive (among all the tracks), or -1 for
@@ -166,6 +168,8 @@ public:
     // that cannot take them are left alone. canSaveSpeed: there is such a file.
     bool canSaveSpeed() const;
     int saveSpeedCurves(QString *error);
+    // How many tracks have a TBC curve that is worked out here and not in their file (of a kind that can keep it): what is lost if the file is closed.
+    int unsavedCurves() const;
     bool rfSpeed() const { return rfSpeed(m_selected); }
     void setRfSpeed(bool on) { setRfSpeed(m_selected, on); }
     // Whether some track's speed is still being worked out.
@@ -175,6 +179,9 @@ public:
     int rfMeanPercent() const;
     // Where the speed of track k stands for the list of tracks: -1 nothing is being done for it, -2 it waits for its turn, else the percent done.
     int rfProgressOf(int k) const;
+    // Work out the TBC curve of track k (the lines of pass 0, from which the speed and the time base correction are made) without asking for anything
+    // to be shown: the list of tracks shows how far it is. Nothing is done for a track that has it, or is being worked on.
+    void computeCurve(int k);
     // Whether there is a speed to draw for the track (from the RF, once it is made; else against its reference).
     bool hasSpeed(int k) const;
     // Whether the speed of the track is 0 because it is the reference (not so when it is made from the RF).
@@ -286,6 +293,7 @@ private:
     // The speed from the RF: per track, the speed in ppm at the centre of each field (sample, ppm), or null while it is not made.
     using SpeedCurve = std::vector<std::pair<double, double>>;
     std::vector<bool> m_rfOn;
+    std::vector<bool> m_rfSaved;   // (the curve of the track is in its file: it was read from it, or it was kept there)
     std::vector<bool> m_aligned;
     bool m_alignPlaced = false;
     bool m_stack = false;

@@ -57,7 +57,7 @@ float cubic(float a, float b, float c, float d, double t)
     return static_cast<float>(0.5 * ((2.0 * b) + (-a + c) * t + (2.0 * a - 5.0 * b + 4.0 * c - d) * t2 + (-a + 3.0 * b - 3.0 * c + d) * t3));
 }
 
-// The samples of a track over [start, start + count) of its corrected time, in the units of a converter of its bits: the track is read
+// The samples of a track over [start, start + count) of its corrected time, in the units of a converter of `bits` bits: the track is read
 // where its corrected time is (a cubic through four samples), and is zero where it is not there.
 std::vector<double> readCorrected(rfx::TrackReader &reader, size_t local, const rfx::SourceMeta &sm, const TimeBase &base, qint64 start, qint64 count, int bits, std::vector<char> *valid = nullptr)
 {
@@ -470,10 +470,11 @@ bool Session::open(const std::vector<Source> &sources, QString *error)
             }
         }
     }
-    // The speed curves an archive keeps are there to be shown at once.
+    // The TBC curves an archive keeps are there to be shown at once.
     {
         std::lock_guard<std::mutex> lock(m_overviewMutex);
         m_rfCurves.assign(m_tracks.size(), nullptr);
+        m_rfSaved.assign(m_tracks.size(), false);
         m_rfData.assign(m_tracks.size(), nullptr);
         m_timebases.assign(m_tracks.size(), nullptr);
         m_rfStarted.assign(m_tracks.size(), false);
@@ -483,6 +484,7 @@ bool Session::open(const std::vector<Source> &sources, QString *error)
                 const rfx::VideoSystem system = saved->pal ? rfx::VideoSystem::Pal : rfx::VideoSystem::Ntsc;
                 m_rfCurves[k] = speedFromFields(saved->fields, rfx::nominalLineSamples(saved->rateHz, system));
                 m_rfData[k] = std::make_shared<RfData>(RfData{saved->fields, saved->pal, saved->rateHz});
+                m_rfSaved[k] = true;
                 m_rfStarted[k] = true;
             }
         }
@@ -600,6 +602,11 @@ void Session::setSelected(int k)
 bool Session::inArchive(int k) const
 {
     return m_sources[static_cast<size_t>(m_tracks[static_cast<size_t>(k)].source)].reader->isArchive();
+}
+
+size_t Session::localTrack(int k) const
+{
+    return m_tracks[static_cast<size_t>(k)].local;
 }
 
 QString Session::sourcePath(int k) const
@@ -962,6 +969,14 @@ bool Session::rfSpeed(int k) const
     return k >= 0 && static_cast<size_t>(k) < m_rfOn.size() && m_rfOn[static_cast<size_t>(k)];
 }
 
+void Session::computeCurve(int k)
+{
+    if (k >= 0 && k < trackCount() && !curveReady(k)) {
+        startRfSpeed(k);
+        emit rfSpeedProgress();   // (the list of tracks shows that it waits)
+    }
+}
+
 void Session::setRfSpeed(int k, bool on)
 {
     if (k < 0 || k >= trackCount() || on == rfSpeed(k)) {
@@ -995,6 +1010,18 @@ bool Session::canSaveSpeed() const
     return std::any_of(m_sources.begin(), m_sources.end(), [](const Loaded &l) { return l.reader->keepsSpeed(); });
 }
 
+int Session::unsavedCurves() const
+{
+    int n = 0;
+    for (size_t k = 0; k < m_tracks.size(); ++k) {
+        const bool saved = k < m_rfSaved.size() && m_rfSaved[k];
+        if (!saved && curveReady(static_cast<int>(k)) && m_sources[static_cast<size_t>(m_tracks[k].source)].reader->keepsSpeed()) {
+            ++n;
+        }
+    }
+    return n;
+}
+
 int Session::saveSpeedCurves(QString *error)
 {
     int kept = 0;
@@ -1019,6 +1046,12 @@ int Session::saveSpeedCurves(QString *error)
             if (!curves.empty()) {
                 rfx::savePass0(m_sources[s].reader->path(), curves);
                 kept += static_cast<int>(curves.size());
+                std::lock_guard<std::mutex> lock(m_overviewMutex);
+                for (size_t k = 0; k < m_tracks.size() && k < m_rfSaved.size(); ++k) {
+                    if (static_cast<size_t>(m_tracks[k].source) == s && curves.count(m_tracks[k].local)) {
+                        m_rfSaved[k] = true;
+                    }
+                }
             }
         }
     } catch (const std::exception &e) {
@@ -1032,11 +1065,8 @@ int Session::saveSpeedCurves(QString *error)
 
 int Session::rfProgressOf(int k) const
 {
-    if (!rfSpeed(k) || curveReady(k)) {
-        return -1;
-    }
-    const int pct = static_cast<size_t>(k) < m_rfPctCount ? m_rfPct[static_cast<size_t>(k)].load() : -1;
-    return pct >= 0 ? pct : -2;
+    // (-1: nothing is being done for it, -2: it waits, else the percent: set by whatever asked for the work)
+    return static_cast<size_t>(k) < m_rfPctCount ? m_rfPct[static_cast<size_t>(k)].load() : -1;
 }
 
 int Session::rfWorkingTracks() const
@@ -1204,6 +1234,7 @@ void Session::startRfSpeed(int only)
                 continue;
             }
             m_rfStarted[k] = true;
+            m_rfPct[k] = -2;   // (waiting for its turn)
             rfx::TrackReader *reader = m_sources[static_cast<size_t>(m_tracks[k].source)].reader.get();
             const double rate = reader->meta().sources[m_tracks[k].local].rateHz;
             jobs.push_back({reader, m_tracks[k].local, static_cast<int>(k), rate > 0 ? rate : m_rateHz});
@@ -1254,6 +1285,8 @@ void Session::startRfSpeed(int only)
                 std::lock_guard<std::mutex> lock(m_overviewMutex);
                 if (static_cast<size_t>(job.track) < m_rfCurves.size()) {
                     m_rfCurves[static_cast<size_t>(job.track)] = curve;
+                    m_rfSaved.resize(m_rfCurves.size(), false);
+                    m_rfSaved[static_cast<size_t>(job.track)] = false;
                     m_rfData.resize(m_rfCurves.size());
                     m_rfData[static_cast<size_t>(job.track)] = data;
                     m_timebases.assign(m_rfCurves.size(), nullptr);   // (the axis of the others may come from this one)

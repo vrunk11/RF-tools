@@ -11,6 +11,7 @@
 
 #pragma once
 
+#include "edit.h"
 #include "session.h"
 
 #include <QMainWindow>
@@ -75,6 +76,8 @@ public:
     bool openFolder(const QString &folder);
     // Ask for more files and add them to the ones that are open.
     void addFiles();
+    QString lastFolder() const;
+    void rememberFolder(const QString &folder);
     void addPaths(const QStringList &paths);
     void openOrAdd(const QStringList &paths);
     bool sourcesFor(const QStringList &paths, std::vector<Session::Source> &sources);
@@ -94,6 +97,12 @@ public:
             m_session->setAligned(k, true);
         }
     }
+    // Check the tracks (the one given, or all of them) of the .rfx files that are open against the checksums they keep, decoding them. Says what it
+    // found, unless `quiet`; true when all that was checked is as packed (and something was).
+    bool verifyTracks(std::optional<int> track, bool quiet = false);
+    // Write what `edit` changes of track `k` in its .rfx file: the file is written again aside (the samples are copied as they are, nothing is coded
+    // again) and takes its place, and the files are opened again as they were. False, with the reason said unless `quiet`, when it could not be.
+    bool rewriteTrack(int k, const rfx::TrackEdit &edit, bool quiet = false);
     void setRfSpeedAll() {
         for (int k = 0; k < m_session->trackCount(); ++k) {
             m_session->setRfSpeed(k, true);
@@ -106,6 +115,7 @@ public:
 protected:
     void dragEnterEvent(QDragEnterEvent *event) override;
     void dropEvent(QDropEvent *event) override;
+    void closeEvent(QCloseEvent *event) override;
 
 private:
     void buildMenus();
@@ -116,8 +126,18 @@ private:
     void chooseFolder();
     void exportYaml();
     void saveSpeed();
+    void updateVerify();
+    QAction *m_verifyAction = nullptr;
+    QPushButton *m_verifyAll = nullptr;
+    QPushButton *m_verifyTrack = nullptr;
+    QPushButton *m_computeTrack = nullptr;
+    QPushButton *m_editTrack = nullptr;
     void closeFile();
-    // ollow: the window with it (by the choice of the user, not when a file is opened or the compact mode comes).
+    // The name, the note and what is said of the disc and the signal, for the selected track: asked in a window, then written to its .rfx file.
+    void editTrack();
+    // What is worked out and not in its file is lost when the file is closed: asks whether to keep it. False when the person cancels.
+    bool confirmCurves();
+    // `follow`: the window with it (by the choice of the user, not when a file is opened or the compact mode comes).
     void showMetadata(bool shown, bool follow = false);
     void updateRecent();
     void rememberRecent(const QStringList &paths);

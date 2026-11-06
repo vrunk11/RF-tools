@@ -9,6 +9,7 @@ add_library(rf-analyse-gui STATIC
     spectrumview.cpp
     statspanel.cpp
     timebase.cpp
+    trackeditdialog.cpp
     tracklist.cpp
     waveformview.cpp
     rf-analyse-resources.qrc)
