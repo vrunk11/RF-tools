@@ -68,6 +68,12 @@ jobs:
           Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
           Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
 
+          # What the machine is and how long each part takes, so that a slow or a stuck run can be read in the log.
+          $clock = [Diagnostics.Stopwatch]::StartNew()
+          Write-Host "Runner: $env:RUNNER_OS $env:RUNNER_ARCH, $([Environment]::ProcessorCount) processors, $([math]::Round((Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB, 1)) GB of memory"
+          Write-Host "Qt: $env:QT_ROOT_DIR"
+          Write-Host "cmake $((cmake --version | Select-Object -First 1))"
+          Write-Host "::group::Configure"
           cmake -S . -B build -G Ninja `
             -DCMAKE_BUILD_TYPE=Release `
             -DBUILD_TESTING=OFF `
@@ -76,8 +82,15 @@ jobs:
             "-DAPP_COMMIT=${{ steps.version.outputs.version }}"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
+          Write-Host "::endgroup::"
+          Write-Host "Configured in $([math]::Round($clock.Elapsed.TotalSeconds)) s"
+          $clock.Restart()
+          Write-Host "::group::Build"
           cmake --build build --parallel
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          Write-Host "::endgroup::"
+          Write-Host "Built in $([math]::Round($clock.Elapsed.TotalSeconds)) s"
+          Get-ChildItem build\bin\*.exe | ForEach-Object { Write-Host ("  {0,-22} {1,12:N0} bytes" -f $_.Name, $_.Length) }
           foreach ($exe in "rfx.exe", "rf-requantize.exe", "rf-analyse.exe", "rf-packer.exe") {
             if (-not (Test-Path "build\bin\$exe")) {
               Write-Error "$exe was not built"
@@ -102,14 +115,68 @@ jobs:
 
           Copy-Item README.md, LICENSE $stage
 
-      - name: Smoke test packaged program
+      - name: Describe the package
+        # (what is in it, and which library each program needs and where it is found: the log tells what is missing before a program is started)
+        timeout-minutes: 5
         shell: pwsh
         run: |
           $stage = Get-ChildItem -Path dist -Directory | Select-Object -First 1
+          Write-Host "::group::Files of the package"
+          Get-ChildItem $stage.FullName -Recurse -File | ForEach-Object { "{0,12:N0}  {1}" -f $_.Length, $_.FullName.Substring($stage.FullName.Length + 1) }
+          Write-Host "::endgroup::"
+          $vsPath = &"${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe" -latest -property installationPath
+          Import-Module "$vsPath\Common7\Tools\Microsoft.VisualStudio.DevShell.dll"
+          Enter-VsDevShell -VsInstallPath $vsPath -SkipAutomaticLocation -DevCmdArguments "-arch=x64 -host_arch=x64"
+          $missing = 0
+          foreach ($exe in "rfx.exe", "rf-requantize.exe", "rf-analyse.exe", "rf-packer.exe") {
+            Write-Host "::group::Libraries $exe needs"
+            $needs = & dumpbin /dependents "$($stage.FullName)\$exe" | Select-String '^\s+(\S+\.dll)\s*$' | ForEach-Object { $_.Matches[0].Groups[1].Value }
+            foreach ($dll in $needs) {
+              if (Test-Path "$($stage.FullName)\$dll") { $where = "package" }
+              elseif (Test-Path "$env:SystemRoot\System32\$dll") { $where = "system" }
+              elseif ($dll -like "api-ms-win-*" -or $dll -like "ext-ms-*") { $where = "system (api set)" }
+              else { $where = "MISSING" }
+              Write-Host ("  {0,-34} {1}" -f $dll, $where)
+              if ($where -eq "MISSING") {
+                $missing++
+                Write-Host "::error::$exe needs $dll, which is neither in the package nor in the system"
+              }
+            }
+            Write-Host "::endgroup::"
+          }
+          if ($missing -gt 0) { exit 1 }
+
+      - name: Smoke test packaged program
+        # (a program that does not start, a missing library for instance, must fail here in minutes with what it said, not wait for the hour of the job)
+        timeout-minutes: 5
+        shell: pwsh
+        run: |
+          $stage = Get-ChildItem -Path dist -Directory | Select-Object -First 1
+          $empty = Join-Path $env:RUNNER_TEMP "empty-input.txt"
+          New-Item -ItemType File -Force -Path $empty | Out-Null
           foreach ($exe in "rfx.exe", "rf-requantize.exe") {
-            & "$($stage.FullName)\$exe" --version
-            if ($LASTEXITCODE -ne 0) {
-              Write-Host "::error::$exe --version exited with $LASTEXITCODE"
+            $out = Join-Path $env:RUNNER_TEMP "$exe.out.txt"
+            $err = Join-Path $env:RUNNER_TEMP "$exe.err.txt"
+            # Started apart, with nothing to read on its input, and given 30 seconds.
+            $process = Start-Process -FilePath "$($stage.FullName)\$exe" -ArgumentList "--version" -NoNewWindow -PassThru `
+              -RedirectStandardInput $empty -RedirectStandardOutput $out -RedirectStandardError $err
+            $null = $process.Handle   # (keeps the handle, or the exit code is lost)
+            $began = Get-Date
+            Write-Host "$(Get-Date -Format HH:mm:ss) $exe --version started (process $($process.Id))"
+            if (-not $process.WaitForExit(30000)) {
+              $process.Kill()
+              Write-Host "::error::$exe --version did not end in 30 seconds"
+              Write-Host "Output: $(Get-Content $out -Raw)"
+              Write-Host "Errors: $(Get-Content $err -Raw)"
+              Write-Host "Libraries beside it:"
+              Get-ChildItem $stage.FullName -Filter *.dll | ForEach-Object { Write-Host "  $($_.Name)" }
+              exit 1
+            }
+            Write-Host (Get-Content $out -Raw)
+            Write-Host "$(Get-Date -Format HH:mm:ss) $exe ended with code $($process.ExitCode) after $([math]::Round(((Get-Date) - $began).TotalSeconds, 1)) s"
+            if ($process.ExitCode -ne 0) {
+              Write-Host "::error::$exe --version exited with $($process.ExitCode)"
+              Write-Host "Errors: $(Get-Content $err -Raw)"
               exit 1
             }
           }
